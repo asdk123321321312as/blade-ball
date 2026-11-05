@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v5 | protected GUI + cloneref ]]
+--[[ Blade Ball — Venice Hub v6 | минимум следов + детект контейнера ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 
@@ -8,15 +8,9 @@ local RunService          = ref(game:GetService("RunService"))
 local TweenService        = ref(game:GetService("TweenService"))
 local UserInputService    = ref(game:GetService("UserInputService"))
 local VirtualInputManager = ref(game:GetService("VirtualInputManager"))
-local ReplicatedStorage   = ref(game:GetService("ReplicatedStorage"))
 
 local LP = Players.LocalPlayer
 while not LP do task.wait() end
-
-local function capFps(v)
-    if setfpscap then pcall(setfpscap, v) end
-end
-capFps(9999)
 
 local CONFIG = {
     autoParry = false,
@@ -25,10 +19,6 @@ local CONFIG = {
     jitter    = true,
     headless  = false,
     korblox   = false,
-    fps60     = false,
-    killChecks= false,
-    aggressive= false,
-    hooks     = false,
 }
 
 local ACCENT = Color3.fromRGB(152, 132, 255)
@@ -38,7 +28,6 @@ local STROKE = Color3.fromRGB(41, 41, 49)
 local TEXT   = Color3.fromRGB(238, 238, 244)
 local SUB    = Color3.fromRGB(128, 128, 144)
 local OKC    = Color3.fromRGB(120, 220, 160)
-local WARNC  = Color3.fromRGB(255, 170, 90)
 
 local function tw(o, t, p, s, d)
     local T = TweenService:Create(o, TweenInfo.new(t, s or Enum.EasingStyle.Quad, d or Enum.EasingDirection.Out), p)
@@ -46,43 +35,47 @@ local function tw(o, t, p, s, d)
     return T
 end
 
-task.wait(1.5)
-local Balls = workspace:WaitForChild("Balls", 30)
+-- ============================== контейнер ==============================
 
--- ============================== защищённый контейнер ==============================
+local protectFn = protectgui or protect_gui or (syn and syn.protect_gui)
+local containerName, container = "playergui", nil
 
-local function hiddenParent(guiObj)
-    local protect = protectgui or protect_gui or (syn and syn.protect_gui)
-    if protect then pcall(protect, guiObj) end
-
-    local target
-    if gethui then
-        local ok, h = pcall(gethui)
-        if ok and typeof(h) == "Instance" then target = h end
+if gethui then
+    local ok, h = pcall(gethui)
+    if ok and typeof(h) == "Instance" then
+        container, containerName = h, "gethui"
     end
-    target = target or game:GetService("CoreGui")
-
-    if pcall(function() guiObj.Parent = target end) then return true end
-    guiObj.Parent = LP:WaitForChild("PlayerGui")
-    return false
 end
 
--- ============================== UI ==============================
+if not container then
+    container = game:GetService("CoreGui")
+    containerName = protectFn and "protect+core" or "core"
+end
+
+if protectFn then pcall(protectFn, nil) end
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "VeniceBB"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
-gui.DisplayOrder = 9999
+gui.DisplayOrder = 500
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-hiddenParent(gui)
+
+if protectFn then pcall(protectFn, gui) end
+
+if not pcall(function() gui.Parent = container end) then
+    gui.Parent = LP:WaitForChild("PlayerGui")
+    containerName = "playergui!"
+end
 getgenv().VeniceBB = gui
+
+-- ============================== UI ==============================
 
 local isCG = pcall(function() local c = Instance.new("CanvasGroup"); c:Destroy() end)
 local main = isCG and Instance.new("CanvasGroup") or Instance.new("Frame")
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.Position = UDim2.fromScale(0.5, 0.5)
-main.Size = UDim2.fromOffset(386, 500)
+main.Size = UDim2.fromOffset(386, 486)
 main.BackgroundColor3 = BG
 main.BackgroundTransparency = 0.02
 main.BorderSizePixel = 0
@@ -131,9 +124,9 @@ status.Position = UDim2.fromOffset(34, 33)
 status.BackgroundTransparency = 1
 status.Font = Enum.Font.Gotham
 status.TextSize = 11
-status.TextColor3 = OKC
+status.TextColor3 = (containerName:match("playergui")) and WARNC or OKC
 status.TextXAlignment = Enum.TextXAlignment.Left
-status.Text = "gui скрыт · fps 9999"
+status.Text = "контейнер: " .. containerName
 status.Parent = header
 
 local line = Instance.new("Frame")
@@ -165,7 +158,7 @@ closeBtn.Parent = header
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
 local body = Instance.new("ScrollingFrame")
-body.Size = UDim2.new(1, -20, 1, -126)
+body.Size = UDim2.new(1, -20, 1, -112)
 body.Position = UDim2.fromOffset(10, 68)
 body.BackgroundTransparency = 1
 body.BorderSizePixel = 0
@@ -189,38 +182,6 @@ footer.TextSize = 11
 footer.TextColor3 = Color3.fromRGB(88, 88, 100)
 footer.Text = "Z  —  свернуть меню"
 footer.Parent = main
-
-local toastBox = Instance.new("Frame")
-toastBox.Size = UDim2.new(1, -20, 0, 26)
-toastBox.Position = UDim2.new(0, 10, 1, -66)
-toastBox.BackgroundColor3 = ROW
-toastBox.BackgroundTransparency = 1
-toastBox.BorderSizePixel = 0
-toastBox.Parent = main
-Instance.new("UICorner", toastBox).CornerRadius = UDim.new(0, 8)
-local toastLbl = Instance.new("TextLabel")
-toastLbl.Size = UDim2.fromScale(1, 1)
-toastLbl.BackgroundTransparency = 1
-toastLbl.Font = Enum.Font.GothamMedium
-toastLbl.TextSize = 11
-toastLbl.TextColor3 = TEXT
-toastLbl.TextTransparency = 1
-toastLbl.Parent = toastBox
-
-local toastToken = 0
-local function toast(msg, color)
-    toastToken = toastToken + 1
-    local my = toastToken
-    toastLbl.Text = msg
-    toastLbl.TextColor3 = color or TEXT
-    tw(toastBox, 0.15, { BackgroundTransparency = 0.25 })
-    tw(toastLbl, 0.15, { TextTransparency = 0 })
-    task.delay(1.9, function()
-        if my ~= toastToken then return end
-        tw(toastBox, 0.25, { BackgroundTransparency = 1 })
-        tw(toastLbl, 0.25, { TextTransparency = 1 })
-    end)
-end
 
 local order = 0
 local function row(tx, dx)
@@ -465,7 +426,11 @@ UserInputService.InputEnded:Connect(function(i)
     end
 end)
 
--- ============================== auto parry ==============================
+-- ============================== auto parry (лениво) ==============================
+
+local Balls = workspace:WaitForChild("Balls", 30)
+local tracked, prevPos = {}, {}
+local loopConn = nil
 
 local function verifyBall(b)
     return typeof(b) == "Instance" and b:IsA("BasePart")
@@ -485,7 +450,6 @@ local function Parry()
     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
 end
 
-local tracked, prevPos = {}, {}
 local function watchBall(b)
     if tracked[b] or not verifyBall(b) then return end
     tracked[b] = true
@@ -497,8 +461,8 @@ if Balls then
     Balls.ChildAdded:Connect(watchBall)
 end
 
-RunService.RenderStepped:Connect(function()
-    if not CONFIG.autoParry or not isTarget() then return end
+local function step()
+    if not isTarget() then return end
     local cam = workspace.CurrentCamera
     if not cam then return end
     local eye = cam.CFrame.Position
@@ -520,21 +484,26 @@ RunService.RenderStepped:Connect(function()
             end
         end
     end
-end)
+end
 
--- ============================== headless / korblox ==============================
+local function setParry(on)
+    CONFIG.autoParry = on
+    if loopConn then loopConn:Disconnect() loopConn = nil end
+    if on then loopConn = RunService.RenderStepped:Connect(step) end
+end
 
-local korbloxMesh, korbloxParts = nil, {}
+-- ============================== внешность ==============================
+
+local korbloxMesh = nil
 
 local function setHeadless(on)
     local char = LP.Character
     if not char then return end
     local head = char:FindFirstChild("Head")
-    if head then
-        head.Transparency = on and 1 or 0
-        for _, v in ipairs(head:GetChildren()) do
-            if v:IsA("Decal") then v.Transparency = on and 1 or 0 end
-        end
+    if not head then return end
+    head.Transparency = on and 1 or 0
+    for _, v in ipairs(head:GetChildren()) do
+        if v:IsA("Decal") then v.Transparency = on and 1 or 0 end
     end
 end
 
@@ -542,41 +511,20 @@ local function setKorblox(on)
     local char = LP.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
+    if not hum or hum.RigType ~= Enum.HumanoidRigType.R6 then return end
 
     if on then
-        if hum.RigType == Enum.HumanoidRigType.R6 then
-            if korbloxMesh then korbloxMesh:Destroy() end
-            local m = Instance.new("CharacterMesh")
-            m.Name = "VeniceKorblox"
-            m.BodyPart = Enum.BodyPart.RightLeg
-            m.MeshId = 101851696
-            m.OverlayTextureId = 101851254
-            m.Parent = char
-            korbloxMesh = m
-        else
-            for _, name in ipairs({ "RightUpperLeg", "RightLowerLeg", "RightFoot" }) do
-                local part = char:FindFirstChild(name)
-                if part then
-                    local old = part:FindFirstChildOfClass("SpecialMesh")
-                    if old then old:Destroy() end
-                    local m = Instance.new("SpecialMesh")
-                    m.MeshType = Enum.MeshType.FileMesh
-                    m.MeshId = name == "RightFoot" and "rbxassetid://902942089"
-                        or name == "RightLowerLeg" and "rbxassetid://902942093"
-                        or "rbxassetid://902942096"
-                    m.TextureId = "rbxassetid://902843398"
-                    m.Parent = part
-                    table.insert(korbloxParts, { part = part, mesh = m })
-                end
-            end
-        end
-    else
-        if korbloxMesh then korbloxMesh:Destroy() korbloxMesh = nil end
-        for _, e in ipairs(korbloxParts) do
-            if e.mesh then e.mesh:Destroy() end
-        end
-        korbloxParts = {}
+        if korbloxMesh and korbloxMesh.Parent then korbloxMesh:Destroy() end
+        local m = Instance.new("CharacterMesh")
+        m.Name = "VeniceKorblox"
+        m.BodyPart = Enum.BodyPart.RightLeg
+        m.MeshId = 101851696
+        m.OverlayTextureId = 101851254
+        m.Parent = char
+        korbloxMesh = m
+    elseif korbloxMesh then
+        korbloxMesh:Destroy()
+        korbloxMesh = nil
     end
 end
 
@@ -587,86 +535,10 @@ LP.CharacterAdded:Connect(function(char)
     if CONFIG.korblox  then setKorblox(true) end
 end)
 
--- ============================== BAC ==============================
-
-local bac = { hooked = false }
-local echoed = {}
-
-local function installEcho()
-    local sec = ReplicatedStorage:FindFirstChild("Security")
-    if not sec then return end
-    for _, v in ipairs(sec:GetDescendants()) do
-        if v:IsA("RemoteEvent") and not echoed[v] then
-            echoed[v] = true
-            v.OnClientEvent:Connect(function(...)
-                local packed = table.pack(...)
-                if packed.n == 0 then return end
-                task.delay(0.02, function()
-                    pcall(function() v:FireServer(table.unpack(packed, 1, packed.n)) end)
-                end)
-            end)
-        end
-    end
-end
-
-local function installHooks()
-    if bac.hooked or not hookmetamethod then return end
-    bac.hooked = true
-    local oldNamecall
-    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        if getnamecallmethod() == "Kick" and self == LP then
-            warn("[Venice] KICK: " .. tostring(select(1, ...)))
-        end
-        return oldNamecall(self, ...)
-    end)
-end
-
-local function disableChecks()
-    local killed = 0
-    local function kill(c)
-        if not c then return end
-        for _, v in ipairs(c:GetChildren()) do
-            if v:IsA("BaseScript") and not v.Name:match("[Dd]evice")
-                and (v.Name:match("[Aa]nti") or v.Name:match("BAC") or v.Name:match("[Cc]heck")) then
-                pcall(function() v.Disabled = true end)
-                killed = killed + 1
-            end
-        end
-    end
-    kill(LP.PlayerScripts)
-    kill(LP.PlayerScripts:FindFirstChild("Client"))
-    return killed
-end
-
-local function applyBac()
-    if CONFIG.hooks then installHooks() end
-    task.wait(0.4)
-    installEcho()
-    task.wait(0.3)
-
-    local killed = 0
-    if CONFIG.killChecks or CONFIG.aggressive then killed = disableChecks() end
-
-    if CONFIG.aggressive then
-        local dc = LP.PlayerScripts:FindFirstChild("Client")
-        local dev = dc and dc:FindFirstChild("DeviceChecker")
-        if dev then pcall(function() dev:Destroy() end) end
-        status.Text = string.format("aggressive · снято %d", killed)
-        status.TextColor3 = WARNC
-    elseif CONFIG.killChecks then
-        status.Text = string.format("проверялок снято: %d", killed)
-        status.TextColor3 = OKC
-    else
-        status.Text = "gui скрыт · bypass выкл"
-        status.TextColor3 = SUB
-    end
-end
-
 -- ============================== rows ==============================
 
 toggleRow("Auto Parry", "реакция по velocity + jitter", CONFIG.autoParry, function(v)
-    CONFIG.autoParry = v
-    toast(v and "Auto Parry вкл" or "Auto Parry выкл", v and OKC or SUB)
+    setParry(v)
 end)
 
 sliderRow("Reaction (frames)", 2, 22, CONFIG.reaction, function(v)
@@ -677,41 +549,21 @@ toggleRow("Parry Jitter", "случайный разброс тайминга", 
     CONFIG.jitter = v
 end)
 
-toggleRow("Headless", "клиентская голова-невидимка", CONFIG.headless, function(v)
+toggleRow("Headless", "голова + face прозрачные", CONFIG.headless, function(v)
     CONFIG.headless = v
-    if LP.Character then setHeadless(v) end
+    task.wait(0.15)
+    setHeadless(v)
 end)
 
-toggleRow("Korblox", "CharacterMesh · правая нога", CONFIG.korblox, function(v)
+toggleRow("Korblox", "CharacterMesh на правую ногу", CONFIG.korblox, function(v)
     CONFIG.korblox = v
-    if LP.Character then setKorblox(v) end
-end)
-
-toggleRow("FPS Cap 60", "выкл = 9999 (как в хабах)", CONFIG.fps60, function(v)
-    capFps(v and 60 or 9999)
-    toast(v and "кап 60" or "анкап 9999", v and OKC or WARNC)
-end)
-
-toggleRow("Снять проверялки", "Disabled на античит-скриптах", CONFIG.killChecks, function(v)
-    CONFIG.killChecks = v
-    applyBac()
-end)
-
-toggleRow("Aggressive", "DeviceChecker + все проверки", CONFIG.aggressive, function(v)
-    CONFIG.aggressive = v
-    applyBac()
-end)
-
-toggleRow("Hooks", "перехват namecall (логи)", CONFIG.hooks, function(v)
-    CONFIG.hooks = v
-    if v then installHooks() end
+    task.wait(0.15)
+    setKorblox(v)
 end)
 
 task.spawn(function()
     tw(scaleObj, 0.42, { Scale = 1 }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
     fade(main, 0, 0.3)
-    task.wait(0.8)
-    installEcho()
 end)
 
-print("[Venice] v5 loaded · protected gui · fps 9999")
+print("[Venice] v6 · контейнер: " .. containerName)
