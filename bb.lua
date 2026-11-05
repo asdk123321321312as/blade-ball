@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v11 | стелс-загрузка + мс-тайминг ]]
+--[[ Blade Ball — Venice Hub v12 | ленивый стелс, 4 контейнера ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 if getgenv().VeniceBBConns then
@@ -28,6 +28,7 @@ local CONFIG = {
     korblox   = false,
     safe      = true,
     echo      = false,
+    mount     = "auto",   -- auto | hidden | coregui | playergui
 }
 
 local ACCENT = Color3.fromRGB(152, 132, 255)
@@ -45,33 +46,48 @@ local function tw(o, t, p, s, d)
     return T
 end
 
--- ============================== стелс-монтирование ==============================
+-- ============================== монтирование ==============================
 
-local gui, main, body, status, setGuiOpen
+local gui, main, body, status, setGuiOpen, built = nil, nil, nil, nil, nil, false
+local order = 0
+local mountLabel = "—"
 
-local function mountGui(g)
-    local names = { "MainGui", "GameUI", "HUD", "Interface", "Main" }
-    g.Name = names[math.random(1, #names)]
-    g.DisplayOrder = 1
-    g.IgnoreGuiInset = true
-    g.ResetOnSpawn = false
-    g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    g.Enabled = false
+local function candidates()
+    local out = {}
+    local mode = CONFIG.mount
+
+    if mode == "auto" or mode == "hidden" then
+        local ok, h = pcall(function() return gethui and gethui() end)
+        if ok and typeof(h) == "Instance" then table.insert(out, { h, "hidden" }) end
+    end
 
     local prot = protectgui or protect_gui or (syn and syn.protect_gui)
-    if prot then pcall(prot, g) end
+    local okc, core = pcall(function() return game:GetService("CoreGui") end)
+    if okc and core and (mode == "auto" or mode == "coregui") then
+        if prot then table.insert(out, { core, "core+protect", prot }) end
+        table.insert(out, { core, "coregui" })
+    end
 
-    local pg = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 10)
-    if pg and pcall(function() g.Parent = pg end) then return "playergui" end
+    if mode == "auto" or mode == "playergui" then
+        local pg = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 10)
+        if pg then table.insert(out, { pg, "playergui" }) end
+    end
+    return out
+end
 
-    local ok, core = pcall(function() return game:GetService("CoreGui") end)
-    if ok and core and pcall(function() g.Parent = core end) then return "coregui" end
+local function mountGui(g)
+    for _, c in ipairs(candidates()) do
+        local container, label, prot = c[1], c[2], c[3]
+        if prot then pcall(prot, g) end
+        if pcall(function() g.Parent = container end) and g.Parent == container then
+            mountLabel = label
+            return label
+        end
+    end
     return nil
 end
 
 -- ============================== строки ==============================
-
-local order = 0
 
 local function baseRow(tx, dx, h)
     order = order + 1
@@ -233,7 +249,7 @@ end
 
 local Balls
 local tracked, prevPos, lastHit = {}, {}, {}
-local loopConn = nil
+local loopConn, childConn = nil, nil
 local blockCache = nil
 
 local function getBalls()
@@ -325,8 +341,6 @@ local function step(dt)
     end
 end
 
-local childConn = nil
-
 local function addBall(b)
     if verifyBall(b) then
         tracked[b] = true
@@ -352,6 +366,7 @@ end
 
 local korbloxMesh = nil
 local applying = false
+local cosmeticConn = nil
 
 local function waitAppearance()
     local char = LP.Character
@@ -409,16 +424,18 @@ local function refreshCosmetics()
     end)
 end
 
-track(LP.CharacterAdded:Connect(function()
-    blockCache = nil
-    task.wait(1)
-    refreshCosmetics()
-end))
+local function ensureCosmeticConn()
+    if cosmeticConn then return end
+    cosmeticConn = LP.CharacterAdded:Connect(function()
+        blockCache = nil
+        task.wait(1)
+        refreshCosmetics()
+    end)
+end
 
 -- ============================== BAC ==============================
 
-local echoed = {}
-local echoConns = {}
+local echoed, echoConns, disabledScripts = {}, {}, {}
 
 local function installEcho()
     if CONFIG.echo then return end
@@ -452,14 +469,13 @@ local function removeBac()
         status.TextColor3 = WARNC
     end
 
-    local killed = 0
     local function killScripts(c)
         if not c then return end
         for _, v in ipairs(c:GetChildren()) do
             if v:IsA("BaseScript") and not v.Name:match("[Dd]evice")
                 and (v.Name:match("[Aa]nti") or v.Name:match("BAC") or v.Name:match("[Cc]heck")) then
                 pcall(function() v.Disabled = true end)
-                killed = killed + 1
+                table.insert(disabledScripts, v)
             end
         end
     end
@@ -471,7 +487,7 @@ local function removeBac()
         for _, v in ipairs(sec:GetDescendants()) do
             if v:IsA("BaseScript") then
                 pcall(function() v.Disabled = true end)
-                killed = killed + 1
+                table.insert(disabledScripts, v)
             end
         end
     end
@@ -482,12 +498,45 @@ local function removeBac()
     if dev then pcall(function() dev:Destroy() end) end
 
     if status then
-        status.Text = string.format("снято %d · безопасно", killed)
+        status.Text = string.format("снято %d · перезаход вернёт", #disabledScripts)
+        status.TextColor3 = OKC
+    end
+end
+
+local function restoreBac()
+    for _, v in ipairs(disabledScripts) do pcall(function() v.Disabled = false end) end
+    table.clear(disabledScripts)
+    if status then
+        status.Text = "проверки включены обратно"
         status.TextColor3 = OKC
     end
 end
 
 -- ============================== наполнение ==============================
+
+local function cycleMount()
+    local modes = { "auto", "hidden", "coregui", "playergui" }
+    for i, m in ipairs(modes) do
+        if m == CONFIG.mount then
+            CONFIG.mount = modes[(i % #modes) + 1]
+            break
+        end
+    end
+    if status then
+        status.Text = "контейнер: " .. CONFIG.mount
+        status.TextColor3 = WARNC
+    end
+end
+
+local function rebuild()
+    if gui then pcall(function() gui:Destroy() end) end
+    gui, main, body, status = nil, nil, nil, nil
+    built = false
+    order = 0
+    if setGuiOpen then setGuiOpen(false) end
+    task.wait(0.2)
+    if ensure and ensure() then setGuiOpen(true) end
+end
 
 local function build()
     toggleRow("Стелс-режим", "разброс тайминга, ожидание вида", CONFIG.safe, function(v)
@@ -497,48 +546,57 @@ local function build()
             status.TextColor3 = v and OKC or SUB
         end
     end)
-    task.wait(0.05)
+    task.wait(0.04)
     toggleRow("BAC эхо", "повтор Security-ремоутов", CONFIG.echo, function(v)
         if v then installEcho() else removeEcho() end
     end)
-    task.wait(0.05)
+    task.wait(0.04)
     buttonRow("Снять проверки", "anti/check скрипты, DeviceChecker", removeBac)
-    task.wait(0.05)
+    task.wait(0.04)
+    buttonRow("Вернуть проверки", "включить скрипты обратно", restoreBac)
+    task.wait(0.04)
     toggleRow("Auto Parry", "через Hotbar.Block", CONFIG.autoParry, setParry)
-    task.wait(0.05)
+    task.wait(0.04)
     sliderRow("Окно (мс)", 20, 300, CONFIG.window, function(v)
         CONFIG.window = v
         if status then
             status.Text = string.format("%s · %dмс · %d%%", CONFIG.safe and "safe" or "normal", CONFIG.window, CONFIG.accuracy)
         end
     end)
-    task.wait(0.05)
+    task.wait(0.04)
     sliderRow("Точность %", 40, 100, CONFIG.accuracy, function(v)
         CONFIG.accuracy = v
         if status then
             status.Text = string.format("%s · %dмс · %d%%", CONFIG.safe and "safe" or "normal", CONFIG.window, CONFIG.accuracy)
         end
     end)
-    task.wait(0.05)
+    task.wait(0.04)
     toggleRow("Headless", "голова + face прозрачные", CONFIG.headless, function(v)
         CONFIG.headless = v
+        ensureCosmeticConn()
         task.spawn(function()
             if CONFIG.safe then task.wait(1.2) end
             applyHeadless(v)
         end)
     end)
-    task.wait(0.05)
+    task.wait(0.04)
     toggleRow("Korblox", "CharacterMesh на правую ногу", CONFIG.korblox, function(v)
         CONFIG.korblox = v
+        ensureCosmeticConn()
         task.spawn(function()
             if CONFIG.safe then task.wait(1.2) end
             applyKorblox(v)
         end)
     end)
-    task.wait(0.05)
-    buttonRow("Выгрузить", "удалить GUI и отключить связи", function()
+    task.wait(0.04)
+    buttonRow("Контейнер GUI", "auto → hidden → coregui → playergui", cycleMount)
+    task.wait(0.04)
+    buttonRow("Пересоздать GUI", "перенести в выбранный контейнер", rebuild)
+    task.wait(0.04)
+    buttonRow("Выгрузить", "удалить GUI и все связи", function()
         if loopConn then loopConn:Disconnect() end
         if childConn then childConn:Disconnect() end
+        if cosmeticConn then cosmeticConn:Disconnect() end
         removeEcho()
         for _, c in ipairs(getgenv().VeniceBBConns) do pcall(function() c:Disconnect() end) end
         if gui then gui:Destroy() end
@@ -551,7 +609,7 @@ end
 local open = false
 
 setGuiOpen = function(force)
-    if not gui then return end
+    if not gui or not main then return end
     local target = force ~= nil and force or not open
     if target == open then return end
     open = target
@@ -571,17 +629,20 @@ setGuiOpen = function(force)
     end
 end
 
-track(UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.KeyCode == Enum.KeyCode.Z and not UserInputService:GetFocusedTextBox() then
-        setGuiOpen()
-    end
-end))
-
 local function createGui()
-    gui = Instance.new("ScreenGui")
-    local where = mountGui(gui)
-    if not where then return false end
+    local g = Instance.new("ScreenGui")
+    local where = mountGui(g)
+    if not where then
+        g:Destroy()
+        return false
+    end
+    gui = g
+    gui.Name = "MainGui"
+    gui.DisplayOrder = 1
+    gui.IgnoreGuiInset = true
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Enabled = false
     getgenv().VeniceBB = gui
 
     main = Instance.new("Frame")
@@ -631,7 +692,7 @@ local function createGui()
     status.TextSize = 10
     status.TextColor3 = OKC
     status.TextXAlignment = Enum.TextXAlignment.Left
-    status.Text = string.format("safe · %dмс · %d%%", CONFIG.window, CONFIG.accuracy)
+    status.Text = "контейнер: " .. mountLabel
     status.Parent = header
 
     local closeBtn = Instance.new("TextButton")
@@ -697,15 +758,24 @@ local function createGui()
     return true
 end
 
--- ============================== запуск с задержкой ==============================
-
-task.spawn(function()
-    task.wait(2.5 + math.random() * 2.5)
-    if not createGui() then return end
-    task.wait(0.05)
+ensure = function()
+    if built then return true end
+    if not createGui() then return false end
+    built = true
     build()
-    task.wait(0.15)
-    setGuiOpen(true)
-end)
+    return true
+end
 
-print("[Venice] v11 · stealth · parry: block")
+track(UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.Z and not UserInputService:GetFocusedTextBox() then
+        if not built then
+            if ensure() then
+                task.wait(0.1)
+                setGuiOpen(true)
+            end
+        else
+            setGuiOpen()
+        end
+    end
+end))
