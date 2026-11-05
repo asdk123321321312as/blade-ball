@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v9 | parry через Hotbar.Block, без VIM ]]
+--[[ Blade Ball — Venice Hub v10 | точность + мс-тайминг ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 
@@ -15,9 +15,9 @@ while not LP do task.wait() end
 
 local CONFIG = {
     autoParry = false,
-    reaction  = 10,
+    window    = 110,
+    accuracy  = 80,
     maxRange  = 170,
-    jitter    = true,
     headless  = false,
     korblox   = false,
     safe      = true,
@@ -69,7 +69,7 @@ getgenv().VeniceBB = gui
 local main = Instance.new("Frame")
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.Position = UDim2.fromScale(0.5, 0.5)
-main.Size = UDim2.fromOffset(340, 452)
+main.Size = UDim2.fromOffset(340, 470)
 main.BackgroundColor3 = BG
 main.BackgroundTransparency = 0.03
 main.BorderSizePixel = 0
@@ -115,7 +115,7 @@ status.Font = Enum.Font.Gotham
 status.TextSize = 10
 status.TextColor3 = OKC
 status.TextXAlignment = Enum.TextXAlignment.Left
-status.Text = "safe · parry: remote"
+status.Text = "safe · 110мс · 80%"
 status.Parent = header
 
 local closeBtn = Instance.new("TextButton")
@@ -362,10 +362,10 @@ UserInputService.InputEnded:Connect(function(i)
     end
 end)
 
--- ============================== парирование через кнопку игры ==============================
+-- ============================== парирование ==============================
 
 local Balls = workspace:WaitForChild("Balls", 30)
-local tracked, prevPos = {}, {}
+local tracked, prevPos, lastHit = {}, {}, {}
 local loopConn = nil
 local blockCache = nil
 
@@ -384,22 +384,13 @@ local function getBlock()
     local pg = LP:FindFirstChild("PlayerGui")
     local hotbar = pg and pg:FindFirstChild("Hotbar")
     local btn = hotbar and hotbar:FindFirstChild("Block")
-    if btn then
-        blockCache = btn
-        return btn
-    end
+    if btn then blockCache = btn return btn end
 end
-
-local method = "remote"
 
 local function Parry()
     local block = getBlock()
-
     if block then
-        if firesignal then
-            local ok = pcall(firesignal, block.Activated)
-            if ok then return end
-        end
+        if firesignal and pcall(firesignal, block.Activated) then return end
         if getconnections then
             local ok = pcall(function()
                 for _, c in ipairs(getconnections(block.Activated)) do
@@ -409,32 +400,43 @@ local function Parry()
             if ok then return end
         end
     end
-
-    method = "vim"
     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
 end
 
-local function step()
+local function step(dt)
     if not isTarget() then return end
     local cam = workspace.CurrentCamera
     if not cam then return end
     local eye = cam.CFrame.Position
+    local now = os.clock()
+
     for b in pairs(tracked) do
         if not b.Parent or not b:IsDescendantOf(Balls) then
             tracked[b] = nil
             prevPos[b] = nil
+            lastHit[b] = nil
         else
             local pos  = b.Position
             local prev = prevPos[b] or pos
             prevPos[b] = pos
-            local vel  = (prev - pos).Magnitude
+
+            local vel  = (prev - pos).Magnitude / math.max(dt, 1 / 240)
             local dist = (pos - eye).Magnitude
-            if vel > 0.15 and dist <= CONFIG.maxRange and (prev - eye).Magnitude > dist then
-                local thr = CONFIG.reaction
-                local spread = CONFIG.safe and 0.22 or 0.1
-                if CONFIG.jitter then thr = thr * (1 - spread / 2 + math.random() * spread) end
-                if (dist / vel) <= thr then Parry() end
+
+            if vel > 1 and dist <= CONFIG.maxRange and (prev - eye).Magnitude > dist then
+                local window = CONFIG.window / 1000
+
+                if CONFIG.safe then window = window * (0.85 + math.random() * 0.3) end
+
+                if math.random() * 100 > CONFIG.accuracy then
+                    window = window * (2.0 + math.random() * 0.8)
+                end
+
+                if (dist / vel) <= window and now - (lastHit[b] or 0) > 0.35 then
+                    lastHit[b] = now
+                    Parry()
+                end
             end
         end
     end
@@ -522,7 +524,7 @@ end)
 
 -- ============================== BAC ==============================
 
-local bac = { removed = false, hooked = false }
+local bac = { removed = false }
 local echoed = {}
 
 local function installEcho()
@@ -543,10 +545,7 @@ local function installEcho()
 end
 
 local function removeBac()
-    if bac.removed then
-        status.Text = "bac уже удалён"
-        return
-    end
+    if bac.removed then status.Text = "bac уже удалён" return end
     bac.removed = true
     status.Text = "удаляю bac..."
     status.TextColor3 = WARNC
@@ -590,19 +589,25 @@ end
 -- ============================== наполнение ==============================
 
 local function build()
-    toggleRow("Безопасный режим", "медленно, после загрузки вида", CONFIG.safe, function(v)
+    toggleRow("Безопасный режим", "разброс тайминга, после загрузки вида", CONFIG.safe, function(v)
         CONFIG.safe = v
-        status.Text = (v and "safe" or "normal") .. " · parry: " .. method
+        status.Text = (v and "safe" or "normal") .. string.format(" · %dмс · %d%%", CONFIG.window, CONFIG.accuracy)
         status.TextColor3 = v and OKC or SUB
     end)
     task.wait(0.06)
-    buttonRow("Удалить BAC", "проверялки + DeviceChecker, эхо остаётся", removeBac)
+    buttonRow("Удалить BAC", "проверялки + DeviceChecker, эхо", removeBac)
     task.wait(0.06)
-    toggleRow("Auto Parry", "через Hotbar.Block, не VIM", CONFIG.autoParry, setParry)
+    toggleRow("Auto Parry", "через Hotbar.Block", CONFIG.autoParry, setParry)
     task.wait(0.06)
-    sliderRow("Reaction (frames)", 2, 22, CONFIG.reaction, function(v) CONFIG.reaction = v end)
+    sliderRow("Окно (мс)", 20, 300, CONFIG.window, function(v)
+        CONFIG.window = v
+        status.Text = string.format("%s · %dмс · %d%%", CONFIG.safe and "safe" or "normal", CONFIG.window, CONFIG.accuracy)
+    end)
     task.wait(0.06)
-    toggleRow("Parry Jitter", "случайный разброс тайминга", CONFIG.jitter, function(v) CONFIG.jitter = v end)
+    sliderRow("Точность %", 40, 100, CONFIG.accuracy, function(v)
+        CONFIG.accuracy = v
+        status.Text = string.format("%s · %dмс · %d%%", CONFIG.safe and "safe" or "normal", CONFIG.window, CONFIG.accuracy)
+    end)
     task.wait(0.06)
     toggleRow("Headless", "голова + face прозрачные", CONFIG.headless, function(v)
         CONFIG.headless = v
@@ -629,4 +634,4 @@ task.spawn(function()
     tw(main, 0.25, { BackgroundTransparency = 0.03 })
 end)
 
-print("[Venice] v9 · parry: Hotbar.Block")
+print("[Venice] v10 · parry: block · accuracy 80")
