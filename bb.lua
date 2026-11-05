@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v7 | сборка UI по кадрам, без спайка ]]
+--[[ Blade Ball — Venice Hub v8 | safe mode + remove BAC ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 
@@ -8,11 +8,20 @@ local RunService          = ref(game:GetService("RunService"))
 local TweenService        = ref(game:GetService("TweenService"))
 local UserInputService    = ref(game:GetService("UserInputService"))
 local VirtualInputManager = ref(game:GetService("VirtualInputManager"))
+local ReplicatedStorage   = ref(game:GetService("ReplicatedStorage"))
 
 local LP = Players.LocalPlayer
 while not LP do task.wait() end
 
-local CONFIG = { autoParry = false, reaction = 10, maxRange = 170, jitter = true, headless = false, korblox = false }
+local CONFIG = {
+    autoParry = false,
+    reaction  = 10,
+    maxRange  = 170,
+    jitter    = true,
+    headless  = false,
+    korblox   = false,
+    safe      = true,
+}
 
 local ACCENT = Color3.fromRGB(152, 132, 255)
 local BG     = Color3.fromRGB(9, 9, 11)
@@ -21,6 +30,7 @@ local STROKE = Color3.fromRGB(41, 41, 49)
 local TEXT   = Color3.fromRGB(238, 238, 244)
 local SUB    = Color3.fromRGB(128, 128, 144)
 local OKC    = Color3.fromRGB(120, 220, 160)
+local WARNC  = Color3.fromRGB(255, 170, 90)
 
 local function tw(o, t, p, s, d)
     local T = TweenService:Create(o, TweenInfo.new(t, s or Enum.EasingStyle.Quad, d or Enum.EasingDirection.Out), p)
@@ -28,14 +38,10 @@ local function tw(o, t, p, s, d)
     return T
 end
 
--- даём сессии устояться
 task.wait(2)
-
--- ============================== контейнер ==============================
 
 local protectFn = protectgui or protect_gui or (syn and syn.protect_gui)
 local container, containerName = nil, "playergui"
-
 if gethui then
     local ok, h = pcall(gethui)
     if ok and typeof(h) == "Instance" then container, containerName = h, "gethui" end
@@ -63,7 +69,7 @@ getgenv().VeniceBB = gui
 local main = Instance.new("Frame")
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.Position = UDim2.fromScale(0.5, 0.5)
-main.Size = UDim2.fromOffset(340, 430)
+main.Size = UDim2.fromOffset(340, 452)
 main.BackgroundColor3 = BG
 main.BackgroundTransparency = 0.03
 main.BorderSizePixel = 0
@@ -109,7 +115,7 @@ status.Font = Enum.Font.Gotham
 status.TextSize = 10
 status.TextColor3 = OKC
 status.TextXAlignment = Enum.TextXAlignment.Left
-status.Text = "контейнер: " .. containerName
+status.Text = "safe · " .. containerName
 status.Parent = header
 
 local closeBtn = Instance.new("TextButton")
@@ -156,10 +162,10 @@ footer.Parent = main
 -- ============================== строки ==============================
 
 local order = 0
-local function toggleRow(tx, dx, default, cb)
+local function baseRow(tx, dx, h)
     order = order + 1
     local r = Instance.new("Frame")
-    r.Size = UDim2.new(1, -4, 0, 46)
+    r.Size = UDim2.new(1, -4, 0, h)
     r.BackgroundColor3 = ROW
     r.BackgroundTransparency = 0.15
     r.BorderSizePixel = 0
@@ -178,29 +184,36 @@ local function toggleRow(tx, dx, default, cb)
     t.Text = tx
     t.Parent = r
 
-    local d = Instance.new("TextLabel")
-    d.Size = UDim2.new(1, -64, 0, 13)
-    d.Position = UDim2.fromOffset(11, 24)
-    d.BackgroundTransparency = 1
-    d.Font = Enum.Font.Gotham
-    d.TextSize = 9
-    d.TextColor3 = SUB
-    d.TextXAlignment = Enum.TextXAlignment.Left
-    d.Text = dx
-    d.Parent = r
+    if dx then
+        local d = Instance.new("TextLabel")
+        d.Size = UDim2.new(1, -64, 0, 13)
+        d.Position = UDim2.fromOffset(11, 24)
+        d.BackgroundTransparency = 1
+        d.Font = Enum.Font.Gotham
+        d.TextSize = 9
+        d.TextColor3 = SUB
+        d.TextXAlignment = Enum.TextXAlignment.Left
+        d.Text = dx
+        d.Parent = r
+    end
 
+    return r
+end
+
+local function toggleRow(tx, dx, default, cb)
+    local r = baseRow(tx, dx, 46)
     local track = Instance.new("Frame")
     track.Size = UDim2.fromOffset(34, 17)
     track.Position = UDim2.new(1, -45, 0.5, -8)
-    track.BackgroundColor3 = Color3.fromRGB(45, 45, 54)
+    track.BackgroundColor3 = default and ACCENT or Color3.fromRGB(45, 45, 54)
     track.BorderSizePixel = 0
     track.Parent = r
     Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
     local knob = Instance.new("Frame")
     knob.Size = UDim2.fromOffset(11, 11)
-    knob.Position = UDim2.fromOffset(3, 3)
-    knob.BackgroundColor3 = Color3.fromRGB(150, 150, 160)
+    knob.Position = default and UDim2.fromOffset(20, 3) or UDim2.fromOffset(3, 3)
+    knob.BackgroundColor3 = default and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 160)
     knob.BorderSizePixel = 0
     knob.Parent = track
     Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
@@ -224,27 +237,7 @@ local function toggleRow(tx, dx, default, cb)
 end
 
 local function sliderRow(tx, min, max, default, cb)
-    order = order + 1
-    local r = Instance.new("Frame")
-    r.Size = UDim2.new(1, -4, 0, 52)
-    r.BackgroundColor3 = ROW
-    r.BackgroundTransparency = 0.15
-    r.BorderSizePixel = 0
-    r.LayoutOrder = order
-    r.Parent = body
-    Instance.new("UICorner", r).CornerRadius = UDim.new(0, 9)
-
-    local t = Instance.new("TextLabel")
-    t.Size = UDim2.new(1, -64, 0, 15)
-    t.Position = UDim2.fromOffset(11, 8)
-    t.BackgroundTransparency = 1
-    t.Font = Enum.Font.GothamSemibold
-    t.TextSize = 12
-    t.TextColor3 = TEXT
-    t.TextXAlignment = Enum.TextXAlignment.Left
-    t.Text = tx
-    t.Parent = r
-
+    local r = baseRow(tx, nil, 52)
     local val = Instance.new("TextLabel")
     val.Size = UDim2.fromOffset(40, 15)
     val.Position = UDim2.new(1, -52, 0, 8)
@@ -308,10 +301,27 @@ local function sliderRow(tx, min, max, default, cb)
     return r
 end
 
--- ============================== закрытие ==============================
+local function buttonRow(tx, dx, cb)
+    local r = baseRow(tx, dx, 42)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.fromScale(1, 1)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.Parent = r
+    local lbl = r:FindFirstChildOfClass("TextLabel")
+    btn.MouseEnter:Connect(function() tw(lbl, 0.15, { TextColor3 = ACCENT }) end)
+    btn.MouseLeave:Connect(function() tw(lbl, 0.15, { TextColor3 = TEXT }) end)
+    btn.MouseButton1Click:Connect(function()
+        tw(lbl, 0.1, { TextColor3 = OKC })
+        task.delay(0.25, function() tw(lbl, 0.2, { TextColor3 = TEXT }) end)
+        task.spawn(function() pcall(cb) end)
+    end)
+    return r
+end
+
+-- ============================== окно ==============================
 
 local open = true
-
 local function setOpen(state)
     if state == open then return end
     open = state
@@ -321,9 +331,7 @@ local function setOpen(state)
         tw(main, 0.22, { BackgroundTransparency = 0.03 })
     else
         tw(main, 0.16, { BackgroundTransparency = 1 })
-        task.delay(0.17, function()
-            if not open then main.Visible = false end
-        end)
+        task.delay(0.17, function() if not open then main.Visible = false end end)
     end
 end
 
@@ -355,7 +363,7 @@ UserInputService.InputEnded:Connect(function(i)
     end
 end)
 
--- ============================== логика (лениво) ==============================
+-- ============================== парирование ==============================
 
 local Balls = workspace:WaitForChild("Balls", 30)
 local tracked, prevPos = {}, {}
@@ -372,8 +380,9 @@ end
 
 local lastParry = 0
 local function Parry()
+    local gap = CONFIG.safe and 0.08 or 0.055
     local now = os.clock()
-    if now - lastParry < 0.055 then return end
+    if now - lastParry < gap then return end
     lastParry = now
     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
@@ -396,7 +405,8 @@ local function step()
             local dist = (pos - eye).Magnitude
             if vel > 0.15 and dist <= CONFIG.maxRange and (prev - eye).Magnitude > dist then
                 local thr = CONFIG.reaction
-                if CONFIG.jitter then thr = thr * (0.9 + math.random() * 0.2) end
+                local spread = CONFIG.safe and 0.22 or 0.1
+                if CONFIG.jitter then thr = thr * (1 - spread / 2 + math.random() * spread) end
                 if (dist / vel) <= thr then Parry() end
             end
         end
@@ -416,11 +426,29 @@ local function setParry(on)
     end
 end
 
-local korbloxMesh = nil
+-- ============================== внешность ==============================
 
-local function setHeadless(on)
+local korbloxMesh = nil
+local applying = false
+
+local function waitAppearance()
     local char = LP.Character
-    local head = char and char:FindFirstChild("Head")
+    if not char then return nil end
+    if CONFIG.safe and not LP:HasAppearanceLoaded() then
+        task.spawn(function() pcall(function() LP.CharacterAppearanceLoaded:Wait() end) end)
+        local t = 0
+        while not LP:HasAppearanceLoaded() and t < 40 do
+            task.wait(0.1)
+            t = t + 1
+        end
+    end
+    return LP.Character
+end
+
+local function applyHeadless(on)
+    local char = waitAppearance()
+    if not char then return end
+    local head = char:FindFirstChild("Head")
     if not head then return end
     head.Transparency = on and 1 or 0
     for _, v in ipairs(head:GetChildren()) do
@@ -428,9 +456,10 @@ local function setHeadless(on)
     end
 end
 
-local function setKorblox(on)
-    local char = LP.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
+local function applyKorblox(on)
+    local char = waitAppearance()
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.RigType ~= Enum.HumanoidRigType.R6 then return end
     if on then
         if korbloxMesh and korbloxMesh.Parent then korbloxMesh:Destroy() end
@@ -447,16 +476,117 @@ local function setKorblox(on)
     end
 end
 
-LP.CharacterAdded:Connect(function(char)
-    char:WaitForChild("Humanoid", 10)
-    task.wait(0.6)
-    if CONFIG.headless then setHeadless(true) end
-    if CONFIG.korblox  then setKorblox(true) end
+local function refreshCosmetics()
+    if applying then return end
+    applying = true
+    task.spawn(function()
+        if CONFIG.safe then task.wait(1.2) else task.wait(0.2) end
+        if CONFIG.headless then applyHeadless(true) end
+        if CONFIG.safe then task.wait(0.4) end
+        if CONFIG.korblox then applyKorblox(true) end
+        applying = false
+    end)
+end
+
+LP.CharacterAdded:Connect(function()
+    task.wait(1)
+    refreshCosmetics()
 end)
 
--- ============================== наполнение по кадрам ==============================
+-- ============================== BAC ==============================
+
+local bac = { removed = false, hooked = false }
+local echoed = {}
+
+local function installEcho()
+    local sec = ReplicatedStorage:FindFirstChild("Security")
+    if not sec then return end
+    for _, v in ipairs(sec:GetDescendants()) do
+        if v:IsA("RemoteEvent") and not echoed[v] then
+            echoed[v] = true
+            v.OnClientEvent:Connect(function(...)
+                local packed = table.pack(...)
+                if packed.n == 0 then return end
+                task.delay(0.02, function()
+                    pcall(function() v:FireServer(table.unpack(packed, 1, packed.n)) end)
+                end)
+            end)
+        end
+    end
+end
+
+local function installHooks()
+    if bac.hooked or CONFIG.safe or not hookmetamethod then return end
+    bac.hooked = true
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        if getnamecallmethod() == "Kick" and self == LP then
+            warn("[Venice] KICK: " .. tostring(select(1, ...)))
+        end
+        return oldNamecall(self, ...)
+    end)
+end
+
+local function removeBac()
+    if bac.removed then
+        status.Text = "bac уже удалён"
+        status.TextColor3 = OKC
+        return
+    end
+    bac.removed = true
+
+    status.Text = "удаляю bac..."
+    status.TextColor3 = WARNC
+
+    installEcho()
+    task.wait(0.6)
+
+    local killed = 0
+    local function killScripts(c)
+        if not c then return end
+        for _, v in ipairs(c:GetChildren()) do
+            if v:IsA("BaseScript") and not v.Name:match("[Dd]evice")
+                and (v.Name:match("[Aa]nti") or v.Name:match("BAC") or v.Name:match("[Cc]heck")) then
+                pcall(function() v.Disabled = true end)
+                killed = killed + 1
+            end
+        end
+    end
+    killScripts(LP.PlayerScripts)
+    killScripts(LP.PlayerScripts:FindFirstChild("Client"))
+
+    local sec = ReplicatedStorage:FindFirstChild("Security")
+    if sec then
+        for _, v in ipairs(sec:GetDescendants()) do
+            if v:IsA("BaseScript") then
+                pcall(function() v.Disabled = true end)
+                killed = killed + 1
+            end
+        end
+    end
+
+    task.wait(0.4)
+    local dc = LP.PlayerScripts:FindFirstChild("Client")
+    local dev = dc and dc:FindFirstChild("DeviceChecker")
+    if dev then pcall(function() dev:Destroy() end) end
+
+    installHooks()
+
+    status.Text = string.format("bac удалён · снято %d · эхо", killed)
+    status.TextColor3 = OKC
+end
+
+-- ============================== наполнение ==============================
 
 local function build()
+    toggleRow("Безопасный режим", "медленно, без хуков, после загрузки вида", CONFIG.safe, function(v)
+        CONFIG.safe = v
+        status.Text = v and ("safe · " .. containerName) or ("normal · " .. containerName)
+        status.TextColor3 = v and OKC or SUB
+    end)
+    task.wait(0.06)
+    buttonRow("Удалить BAC", "проверялки + DeviceChecker, эхо остаётся", removeBac)
+    task.wait(0.06)
     toggleRow("Auto Parry", "реакция по velocity + jitter", CONFIG.autoParry, setParry)
     task.wait(0.06)
     sliderRow("Reaction (frames)", 2, 22, CONFIG.reaction, function(v) CONFIG.reaction = v end)
@@ -465,14 +595,18 @@ local function build()
     task.wait(0.06)
     toggleRow("Headless", "голова + face прозрачные", CONFIG.headless, function(v)
         CONFIG.headless = v
-        task.wait(0.15)
-        setHeadless(v)
+        task.spawn(function()
+            if CONFIG.safe then task.wait(1.2) end
+            applyHeadless(v)
+        end)
     end)
     task.wait(0.06)
     toggleRow("Korblox", "CharacterMesh на правую ногу", CONFIG.korblox, function(v)
         CONFIG.korblox = v
-        task.wait(0.15)
-        setKorblox(v)
+        task.spawn(function()
+            if CONFIG.safe then task.wait(1.2) end
+            applyKorblox(v)
+        end)
     end)
 end
 
@@ -484,4 +618,4 @@ task.spawn(function()
     tw(main, 0.25, { BackgroundTransparency = 0.03 })
 end)
 
-print("[Venice] v7 · контейнер: " .. containerName)
+print("[Venice] v8 · " .. containerName)
