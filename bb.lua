@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v8 | safe mode + remove BAC ]]
+--[[ Blade Ball — Venice Hub v9 | parry через Hotbar.Block, без VIM ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 
@@ -115,7 +115,7 @@ status.Font = Enum.Font.Gotham
 status.TextSize = 10
 status.TextColor3 = OKC
 status.TextXAlignment = Enum.TextXAlignment.Left
-status.Text = "safe · " .. containerName
+status.Text = "safe · parry: remote"
 status.Parent = header
 
 local closeBtn = Instance.new("TextButton")
@@ -196,7 +196,6 @@ local function baseRow(tx, dx, h)
         d.Text = dx
         d.Parent = r
     end
-
     return r
 end
 
@@ -363,11 +362,12 @@ UserInputService.InputEnded:Connect(function(i)
     end
 end)
 
--- ============================== парирование ==============================
+-- ============================== парирование через кнопку игры ==============================
 
 local Balls = workspace:WaitForChild("Balls", 30)
 local tracked, prevPos = {}, {}
 local loopConn = nil
+local blockCache = nil
 
 local function verifyBall(b)
     return typeof(b) == "Instance" and b:IsA("BasePart")
@@ -378,12 +378,39 @@ local function isTarget()
     return LP.Character ~= nil and LP.Character:FindFirstChild("Highlight") ~= nil
 end
 
-local lastParry = 0
+local function getBlock()
+    if blockCache and blockCache.Parent then return blockCache end
+    blockCache = nil
+    local pg = LP:FindFirstChild("PlayerGui")
+    local hotbar = pg and pg:FindFirstChild("Hotbar")
+    local btn = hotbar and hotbar:FindFirstChild("Block")
+    if btn then
+        blockCache = btn
+        return btn
+    end
+end
+
+local method = "remote"
+
 local function Parry()
-    local gap = CONFIG.safe and 0.08 or 0.055
-    local now = os.clock()
-    if now - lastParry < gap then return end
-    lastParry = now
+    local block = getBlock()
+
+    if block then
+        if firesignal then
+            local ok = pcall(firesignal, block.Activated)
+            if ok then return end
+        end
+        if getconnections then
+            local ok = pcall(function()
+                for _, c in ipairs(getconnections(block.Activated)) do
+                    if c.Enabled then c:Fire() end
+                end
+            end)
+            if ok then return end
+        end
+    end
+
+    method = "vim"
     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
 end
@@ -435,7 +462,6 @@ local function waitAppearance()
     local char = LP.Character
     if not char then return nil end
     if CONFIG.safe and not LP:HasAppearanceLoaded() then
-        task.spawn(function() pcall(function() LP.CharacterAppearanceLoaded:Wait() end) end)
         local t = 0
         while not LP:HasAppearanceLoaded() and t < 40 do
             task.wait(0.1)
@@ -489,6 +515,7 @@ local function refreshCosmetics()
 end
 
 LP.CharacterAdded:Connect(function()
+    blockCache = nil
     task.wait(1)
     refreshCosmetics()
 end)
@@ -515,26 +542,12 @@ local function installEcho()
     end
 end
 
-local function installHooks()
-    if bac.hooked or CONFIG.safe or not hookmetamethod then return end
-    bac.hooked = true
-    local oldNamecall
-    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        if getnamecallmethod() == "Kick" and self == LP then
-            warn("[Venice] KICK: " .. tostring(select(1, ...)))
-        end
-        return oldNamecall(self, ...)
-    end)
-end
-
 local function removeBac()
     if bac.removed then
         status.Text = "bac уже удалён"
-        status.TextColor3 = OKC
         return
     end
     bac.removed = true
-
     status.Text = "удаляю bac..."
     status.TextColor3 = WARNC
 
@@ -570,24 +583,22 @@ local function removeBac()
     local dev = dc and dc:FindFirstChild("DeviceChecker")
     if dev then pcall(function() dev:Destroy() end) end
 
-    installHooks()
-
-    status.Text = string.format("bac удалён · снято %d · эхо", killed)
+    status.Text = string.format("bac удалён · снято %d", killed)
     status.TextColor3 = OKC
 end
 
 -- ============================== наполнение ==============================
 
 local function build()
-    toggleRow("Безопасный режим", "медленно, без хуков, после загрузки вида", CONFIG.safe, function(v)
+    toggleRow("Безопасный режим", "медленно, после загрузки вида", CONFIG.safe, function(v)
         CONFIG.safe = v
-        status.Text = v and ("safe · " .. containerName) or ("normal · " .. containerName)
+        status.Text = (v and "safe" or "normal") .. " · parry: " .. method
         status.TextColor3 = v and OKC or SUB
     end)
     task.wait(0.06)
     buttonRow("Удалить BAC", "проверялки + DeviceChecker, эхо остаётся", removeBac)
     task.wait(0.06)
-    toggleRow("Auto Parry", "реакция по velocity + jitter", CONFIG.autoParry, setParry)
+    toggleRow("Auto Parry", "через Hotbar.Block, не VIM", CONFIG.autoParry, setParry)
     task.wait(0.06)
     sliderRow("Reaction (frames)", 2, 22, CONFIG.reaction, function(v) CONFIG.reaction = v end)
     task.wait(0.06)
@@ -618,4 +629,4 @@ task.spawn(function()
     tw(main, 0.25, { BackgroundTransparency = 0.03 })
 end)
 
-print("[Venice] v8 · " .. containerName)
+print("[Venice] v9 · parry: Hotbar.Block")
