@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v19 ]]
+--[[ Blade Ball — Venice Hub v20 ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 if getgenv().VeniceBBConns then
@@ -200,7 +200,6 @@ local function baseRow(tx, dx, h)
     r.BackgroundTransparency = 0.15
     r.BorderSizePixel = 0
     r.LayoutOrder = order
-    r.Parent = body
     Instance.new("UICorner", r).CornerRadius = UDim.new(0, 9)
 
     local t = Instance.new("TextLabel")
@@ -444,6 +443,7 @@ end
 local Balls = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 5)
 local blockCache = nil
 local LastClick, LastBallHit, IsParrying = 0, nil, false
+local prevDist = {}
 
 local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
@@ -534,27 +534,35 @@ local function UpdateVisuals(root, distance, state)
     end
 end
 
-local function BestBall(origin)
-    local best, bestTTL, bestDist = nil, math.huge, 0
-    if not Balls then return nil end
+local function Scan(origin)
+    local best, bestTTL, bestDist = nil, math.huge, math.huge
+    local near, nearDist = nil, math.huge
+    if not Balls then return nil, nil, nil, nil, nil end
     local children = Balls:GetChildren()
+
     for i = 1, #children do
         local b = children[i]
         if b:GetAttribute("realBall") == true then
-            local pos = b.Position
-            local vel = b.AssemblyLinearVelocity
-            local speed = vel.Magnitude
-            if speed > 1 then
-                local delta = origin - pos
-                local dist = delta.Magnitude
-                if dist <= CONFIG.maxRange and delta.Unit:Dot(vel.Unit) > 0 then
-                    local ttl = dist / speed
-                    if ttl < bestTTL then best, bestTTL, bestDist = b, ttl, dist end
+            local dist = (origin - b.Position).Magnitude
+            local was = prevDist[b]
+            prevDist[b] = dist
+            local approaching = was ~= nil and dist < was
+
+            if dist <= CONFIG.maxRange then
+                if dist < nearDist then near, nearDist = b, dist end
+                if approaching then
+                    local speed = b.AssemblyLinearVelocity.Magnitude
+                    if speed > 1 then
+                        local ttl = dist / speed
+                        if ttl < bestTTL then best, bestTTL, bestDist = b, ttl, dist end
+                    end
                 end
             end
         end
     end
-    return best, bestTTL, bestDist
+
+    if #prevDist > 128 then table.clear(prevDist) end
+    return best, bestTTL, bestDist, near, nearDist
 end
 
 track(RunService.PostSimulation:Connect(function()
@@ -571,28 +579,38 @@ track(RunService.PostSimulation:Connect(function()
     end
 
     local origin = root.Position
-    local ball, ttl, distance = BestBall(origin)
-    if not ball then
+    local ball, ttl, distance, near, nearDist = Scan(origin)
+
+    local focus = ball or near
+    if not focus then
         LastBallHit = nil
         if ring then ring.Transparency = 1 end
         return
     end
 
     local targeted = IsTargeted()
-    local isClashing = targeted and distance <= CONFIG.clashDistance
+    local isClashing = targeted and nearDist <= CONFIG.clashDistance
 
     if ring then
         ring.Transparency = 0.3
-        UpdateVisuals(root, distance, isClashing and "clash" or (targeted and "target" or "neutral"))
+        UpdateVisuals(root, math.min(nearDist, 65), isClashing and "clash" or (targeted and "target" or "neutral"))
     end
 
     if isClashing then
-        SendParry(true, ball)
-    elseif targeted then
+        SendParry(true, near)
+        return
+    end
+
+    if nearDist <= CONFIG.emergencyRadius then
+        SendParry(false, near)
+        return
+    end
+
+    if ball and targeted then
         local ping = (CONFIG.pingBased and NetworkStats and NetworkStats.Value / 1000) or 0.04
         local threshold = CONFIG.distanceToParry + (CONFIG.pingBased and ping * CONFIG.pingOffset or 0)
         if ttl > 0.15 then threshold = threshold * 1.15 end
-        if ttl <= threshold or distance <= CONFIG.emergencyRadius then
+        if ttl <= threshold then
             SendParry(false, ball)
         end
     end
@@ -602,6 +620,7 @@ track(LP.CharacterAdded:Connect(function()
     LastBallHit = nil
     IsParrying = false
     blockCache = nil
+    table.clear(prevDist)
     task.wait(1)
     refreshCosmetics()
 end))
@@ -620,88 +639,107 @@ local function cycleMethod()
     updateStatus()
 end
 
-local function build()
+local builders = {}
+
+local function add(fn) table.insert(builders, fn) end
+
+add(function()
     toggleRow("BAC bypass", "debug.info + getfenv", CONFIG.bypass, function(v)
         CONFIG.bypass = v
         if v then applyBypass() else dropBypass() end
     end)
-    task.wait(0.04)
+end)
+add(function()
     buttonRow("Захват пакета", "перевзвести, потом тапни Block", rearm)
-    task.wait(0.04)
-    buttonRow("Показать захват", "ремоут и аргументы в консоль", dumpCapture)
-    task.wait(0.04)
+end)
+add(function()
     buttonRow("Метод", "packet → touch → click", cycleMethod)
-    task.wait(0.04)
+end)
+add(function()
     toggleRow("Auto Parry", "L — то же самое", CONFIG.autoParry, function(v)
         CONFIG.autoParry = v
         ringState()
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     toggleRow("Visuals", "кольцо на земле", CONFIG.visuals, function(v)
         CONFIG.visuals = v
         ringState()
     end)
-    task.wait(0.04)
+end)
+add(function()
     toggleRow("Показывать радиус", "скрыть кольцо", CONFIG.showRadius, function(v)
         CONFIG.showRadius = v
         ringState()
     end)
-    task.wait(0.04)
+end)
+add(function()
     sliderRow("Порог (мс×100)", 10, 150, math.floor(CONFIG.distanceToParry * 100), function(v)
         CONFIG.distanceToParry = v / 100
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     sliderRow("Аварийный радиус", 3, 30, CONFIG.emergencyRadius, function(v)
         CONFIG.emergencyRadius = v
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     sliderRow("Клаш-зона", 8, 40, CONFIG.clashDistance, function(v)
         CONFIG.clashDistance = v
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     sliderRow("Дальность", 60, 250, CONFIG.maxRange, function(v)
         CONFIG.maxRange = v
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     toggleRow("Учёт пинга", "прогноз по Data Ping", CONFIG.pingBased, function(v)
         CONFIG.pingBased = v
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     sliderRow("Пинг-множитель", 5, 40, math.floor(CONFIG.pingOffset * 10), function(v)
         CONFIG.pingOffset = v / 10
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     sliderRow("Кулдаун клаша мс", 5, 100, math.floor(CONFIG.clashSpeed * 1000), function(v)
         CONFIG.clashSpeed = v / 1000
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     sliderRow("Кулдаун мс", 20, 150, math.floor(CONFIG.normalSpeed * 1000), function(v)
         CONFIG.normalSpeed = v / 1000
         updateStatus()
     end)
-    task.wait(0.04)
+end)
+add(function()
     toggleRow("Лог", "срабатывания в консоль", CONFIG.dump, function(v)
         CONFIG.dump = v
     end)
-    task.wait(0.04)
+end)
+add(function()
     toggleRow("Headless", "голова + face прозрачные", CONFIG.headless, function(v)
         CONFIG.headless = v
         task.spawn(function() task.wait(1.2) applyHeadless(v) end)
     end)
-    task.wait(0.04)
+end)
+add(function()
     toggleRow("Korblox", "CharacterMesh на правую ногу", CONFIG.korblox, function(v)
         CONFIG.korblox = v
         task.spawn(function() task.wait(1.2) applyKorblox(v) end)
     end)
-    task.wait(0.04)
+end)
+add(function()
     buttonRow("Выгрузить", "удалить GUI, кольцо, связи", function()
         capturing = false
         uninstallCapture()
@@ -711,6 +749,24 @@ local function build()
         for _, c in ipairs(getgenv().VeniceBBConns) do pcall(function() c:Disconnect() end) end
         if gui then gui:Destroy() end
         getgenv().VeniceBB = nil
+    end)
+end)
+
+local function build()
+    task.spawn(function()
+        local i = 1
+        while i <= #builders do
+            for _ = 1, 2 do
+                if builders[i] then pcall(builders[i]) end
+                i = i + 1
+                if i > #builders then break end
+            end
+            body.CanvasSize = UDim2.new(0, 0, 0, order * 53 + 12)
+            task.wait()
+        end
+        body.CanvasSize = UDim2.new()
+        body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        updateStatus()
     end)
 end
 
@@ -839,7 +895,7 @@ local function createGui()
     body.ScrollBarThickness = 2
     body.ScrollBarImageColor3 = ACCENT
     body.CanvasSize = UDim2.new()
-    body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    body.AutomaticCanvasSize = Enum.AutomaticSize.None
     body.Parent = main
 
     local list = Instance.new("UIListLayout")
@@ -885,7 +941,6 @@ local function ensure()
     if not createGui() then return false end
     built = true
     build()
-    updateStatus()
     return true
 end
 
@@ -909,4 +964,4 @@ track(UserInputService.InputBegan:Connect(function(input, gp)
     end
 end))
 
-print("[Venice] v19 · тапни Block один раз для захвата пакета")
+print("[Venice] v20 · тапни Block один раз для захвата пакета")
