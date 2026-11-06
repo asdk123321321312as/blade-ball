@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v17 ]]
+--[[ Blade Ball — Venice Hub v18 ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 if getgenv().VeniceBBConns then
@@ -22,19 +22,21 @@ while not LP do task.wait() end
 local function track(c) table.insert(getgenv().VeniceBBConns, c) return c end
 
 local CONFIG = {
-    bypass         = true,
-    method         = "packet",   -- packet | touch | click
-    autoParry      = false,
-    pingBased      = true,
-    pingOffset     = 1.95,
-    distanceToParry= 0.65,
-    emergencyRadius= 10,
-    clashDistance  = 22,
-    clashSpeed     = 0.01,
-    normalSpeed    = 0.05,
-    visuals        = true,
-    showRadius     = true,
-    dump           = false,
+    bypass          = true,
+    method          = "packet",
+    autoParry       = false,
+    pingBased       = true,
+    pingOffset      = 1.95,
+    distanceToParry = 0.65,
+    emergencyRadius = 10,
+    clashDistance   = 22,
+    clashSpeed      = 0.01,
+    normalSpeed     = 0.05,
+    visuals         = true,
+    showRadius      = true,
+    dump            = false,
+    headless        = false,
+    korblox         = false,
 }
 
 local ACCENT = Color3.fromRGB(152, 132, 255)
@@ -361,6 +363,67 @@ local function ringState()
     if active then ensureRing() else dropRing() end
 end
 
+-- ============================== внешность ==============================
+
+local korbloxMesh = nil
+local applying = false
+
+local function waitAppearance()
+    local char = LP.Character
+    if not char then return nil end
+    if not LP:HasAppearanceLoaded() then
+        local t = 0
+        while not LP:HasAppearanceLoaded() and t < 40 do
+            task.wait(0.1)
+            t = t + 1
+        end
+    end
+    return LP.Character
+end
+
+local function applyHeadless(on)
+    local char = waitAppearance()
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if not head then return end
+    head.Transparency = on and 1 or 0
+    for _, v in ipairs(head:GetChildren()) do
+        if v:IsA("Decal") then v.Transparency = on and 1 or 0 end
+    end
+end
+
+local function applyKorblox(on)
+    local char = waitAppearance()
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.RigType ~= Enum.HumanoidRigType.R6 then return end
+    if on then
+        if korbloxMesh and korbloxMesh.Parent then korbloxMesh:Destroy() end
+        local m = Instance.new("CharacterMesh")
+        m.Name = "VeniceKorblox"
+        m.BodyPart = Enum.BodyPart.RightLeg
+        m.MeshId = 101851696
+        m.OverlayTextureId = 101851254
+        m.Parent = char
+        korbloxMesh = m
+    elseif korbloxMesh then
+        korbloxMesh:Destroy()
+        korbloxMesh = nil
+    end
+end
+
+local function refreshCosmetics()
+    if applying then return end
+    applying = true
+    task.spawn(function()
+        task.wait(1.2)
+        if CONFIG.headless then applyHeadless(true) end
+        task.wait(0.4)
+        if CONFIG.korblox then applyKorblox(true) end
+        applying = false
+    end)
+end
+
 -- ============================== парринг ==============================
 
 local Balls = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 5)
@@ -471,22 +534,22 @@ local function UpdateVisuals(root, distance, state)
     end
 end
 
-track(RunService.PostSimulation:Connect(function()
+local function check(visualPass)
     if not CONFIG.autoParry then
-        if ring then ring.Transparency = 1 end
+        if visualPass and ring then ring.Transparency = 1 end
         return
     end
 
     local char = LP.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then
-        if ring then ring.Transparency = 1 end
+        if visualPass and ring then ring.Transparency = 1 end
         return
     end
 
     local ball = GetBall()
     if not ball then
-        if ring then ring.Transparency = 1 end
+        if visualPass and ring then ring.Transparency = 1 end
         return
     end
 
@@ -501,10 +564,12 @@ track(RunService.PostSimulation:Connect(function()
     local targeted = IsTargeted()
     local isClashing = targeted and distance <= CONFIG.clashDistance
 
-    frameCounter = frameCounter + 1
-    if ring and frameCounter % 2 == 0 then
-        ring.Transparency = 0.3
-        UpdateVisuals(root, distance, isClashing and "clash" or (targeted and "target" or "neutral"))
+    if visualPass then
+        frameCounter = frameCounter + 1
+        if ring then
+            ring.Transparency = 0.3
+            UpdateVisuals(root, distance, isClashing and "clash" or (targeted and "target" or "neutral"))
+        end
     end
 
     if isClashing then
@@ -520,12 +585,17 @@ track(RunService.PostSimulation:Connect(function()
             SendParry(false, ball)
         end
     end
-end))
+end
+
+track(RunService.PreSimulation:Connect(function() check(false) end))
+track(RunService.PostSimulation:Connect(function() check(true) end))
 
 track(LP.CharacterAdded:Connect(function()
     LastBallHit = nil
     IsParrying = false
     blockCache = nil
+    task.wait(1)
+    refreshCosmetics()
 end))
 
 -- ============================== наполнение ==============================
@@ -609,9 +679,20 @@ local function build()
         CONFIG.dump = v
     end)
     task.wait(0.04)
+    toggleRow("Headless", "голова + face прозрачные", CONFIG.headless, function(v)
+        CONFIG.headless = v
+        task.spawn(function() task.wait(1.2) applyHeadless(v) end)
+    end)
+    task.wait(0.04)
+    toggleRow("Korblox", "CharacterMesh на правую ногу", CONFIG.korblox, function(v)
+        CONFIG.korblox = v
+        task.spawn(function() task.wait(1.2) applyKorblox(v) end)
+    end)
+    task.wait(0.04)
     buttonRow("Выгрузить", "удалить GUI, кольцо, связи", function()
         capturing = false
         dropRing()
+        if korbloxMesh then pcall(function() korbloxMesh:Destroy() end) end
         dropBypass()
         if oldNamecall then pcall(function() hookmetamethod(game, "__namecall", oldNamecall) end) end
         for _, c in ipairs(getgenv().VeniceBBConns) do pcall(function() c:Disconnect() end) end
@@ -815,4 +896,4 @@ track(UserInputService.InputBegan:Connect(function(input, gp)
     end
 end))
 
-print("[Venice] v17 · тапни Block один раз для захвата пакета")
+print("[Venice] v18 · тапни Block один раз для захвата пакета")
