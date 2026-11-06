@@ -1,10 +1,12 @@
---[[ Blade Ball — Venice Hub v12 | ленивый стелс, 4 контейнера ]]
+--[[ Blade Ball — Venice Hub v16 | bypass 1 ур. + захват пакета + GUI ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 if getgenv().VeniceBBConns then
     for _, c in ipairs(getgenv().VeniceBBConns) do pcall(function() c:Disconnect() end) end
 end
 getgenv().VeniceBBConns = {}
+
+local unpack = unpack or table.unpack
 
 local ref = cloneref or function(s) return s end
 local Players             = ref(game:GetService("Players"))
@@ -20,15 +22,20 @@ while not LP do task.wait() end
 local function track(c) table.insert(getgenv().VeniceBBConns, c) return c end
 
 local CONFIG = {
-    autoParry = false,
-    window    = 110,
-    accuracy  = 80,
+    bypass    = true,
+    method    = "packet",  -- packet | touch | click | signal
+    parryDist = 12,
+    jitter    = 0.18,
+    accuracy  = 85,
+    cooldown  = 0.28,
     maxRange  = 170,
-    headless  = false,
-    korblox   = false,
+    autoParry = false,
+    dump      = true,
     safe      = true,
     echo      = false,
-    mount     = "auto",   -- auto | hidden | coregui | playergui
+    headless  = false,
+    korblox   = false,
+    mount     = "auto",
 }
 
 local ACCENT = Color3.fromRGB(152, 132, 255)
@@ -45,6 +52,104 @@ local function tw(o, t, p, s, d)
     T:Play()
     return T
 end
+
+-- ============================== уровень 1 ==============================
+
+local function applyBypass()
+    if not (hookfunction and getrenv) then return false end
+    if getgenv().VeniceBBHooked then return true end
+    getgenv().VeniceBBHooked = true
+
+    local origInfo = getrenv().debug.info
+    local newInfo
+    newInfo = hookfunction(origInfo, function(f, t)
+        if type(f) == "function" then
+            if t == nil or t == "a" then return origInfo(f, t) end
+            return "[C]"
+        end
+        if f == 4 and t == "s" then
+            return "ReplicatedStorage.Controllers.SwordsController"
+        end
+        return origInfo(f, t)
+    end)
+    getgenv().VeniceBBOrigInfo, getgenv().VeniceBBInfo = origInfo, newInfo
+
+    local origEnv = getrenv().getfenv
+    local newEnv
+    newEnv = hookfunction(origEnv, function(l)
+        if type(l) == "number" and l >= 1 and l <= 10 then return origEnv(10) end
+        if type(l) == "function" then return origEnv(l) end
+        return origEnv(1)
+    end)
+    getgenv().VeniceBBOrigEnv, getgenv().VeniceBBEnv = origEnv, newEnv
+    return true
+end
+
+local function dropBypass()
+    if not getgenv().VeniceBBHooked then return end
+    pcall(function() hookfunction(getgenv().VeniceBBInfo, getgenv().VeniceBBOrigInfo) end)
+    pcall(function() hookfunction(getgenv().VeniceBBEnv, getgenv().VeniceBBOrigEnv) end)
+    getgenv().VeniceBBHooked = false
+end
+
+if CONFIG.bypass then applyBypass() end
+
+-- ============================== захват пакета ==============================
+
+local cap = { remote = nil, args = nil }
+local capturing = true
+local attempts = 0
+local oldNamecall = nil
+
+local function updateStatus() end
+
+local function installCapture()
+    if oldNamecall or not (hookmetamethod and getnamecallmethod) then return end
+    pcall(function()
+        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+            if capturing and getnamecallmethod() == "FireServer"
+                and typeof(self) == "Instance" and self:IsA("RemoteEvent") then
+                local full = self:GetFullName()
+                local looks = self.Name:match("[Pp]arry") or self.Name:match("[Bb]lock")
+                    or full:match("[Pp]arry") or full:match("[Bb]lock")
+                if looks or attempts < 6 then
+                    attempts = attempts + 1
+                    if looks or not cap.remote then
+                        cap.remote = self
+                        cap.args = table.pack(...)
+                        print(("[Venice] захвачено: %s (%d арг.)%s"):format(
+                            full, cap.args.n, looks and "" or " — не похоже на парирование"))
+                        if CONFIG.dump then
+                            for i = 1, cap.args.n do
+                                print("   ", i, typeof(cap.args[i]), tostring(cap.args[i]))
+                            end
+                        end
+                        if looks then capturing = false end
+                        task.spawn(updateStatus)
+                    end
+                end
+            end
+            return oldNamecall(self, ...)
+        end)
+    end)
+end
+
+local function rearm()
+    cap.remote, cap.args, attempts = nil, nil, 0
+    capturing = true
+    print("[Venice] захват перевзведён, нажми Block")
+    updateStatus()
+end
+
+local function dumpCapture()
+    if not cap.remote then print("[Venice] захвата нет") return end
+    print("[Venice] ремоут:", cap.remote:GetFullName(), "арг:", cap.args and cap.args.n or 0)
+    if cap.args then
+        for i = 1, cap.args.n do print("   ", i, typeof(cap.args[i]), tostring(cap.args[i])) end
+    end
+end
+
+installCapture()
 
 -- ============================== монтирование ==============================
 
@@ -250,7 +355,7 @@ end
 local Balls
 local tracked, prevPos, lastHit = {}, {}, {}
 local loopConn, childConn = nil, nil
-local blockCache = nil
+local blockCache, lastParry = nil, 0
 
 local function getBalls()
     if Balls and Balls.Parent then return Balls end
@@ -263,6 +368,12 @@ local function verifyBall(b)
         and b:IsDescendantOf(Balls) and b:GetAttribute("realBall") == true
 end
 
+local function getHRP()
+    local c = LP.Character
+    local h = c and c:FindFirstChild("HumanoidRootPart")
+    if h and h:IsA("BasePart") then return h end
+end
+
 local function isTarget()
     return LP.Character ~= nil and LP.Character:FindFirstChild("Highlight") ~= nil
 end
@@ -273,68 +384,87 @@ local function getBlock()
     local pg = LP:FindFirstChild("PlayerGui")
     local hotbar = pg and pg:FindFirstChild("Hotbar")
     local btn = hotbar and hotbar:FindFirstChild("Block")
-    if btn then blockCache = btn return btn end
+    if btn and btn:IsA("GuiButton") then blockCache = btn return btn end
 end
 
-local function clickAt(v)
-    pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(v.X, v.Y, 0, true, game, 0)
-        VirtualInputManager:SendMouseButtonEvent(v.X, v.Y, 0, false, game, 0)
+local function sendTouch(x, y)
+    return pcall(function()
+        VirtualInputManager:SendTouchEvent(x, y, Enum.UserInputState.Begin)
+        VirtualInputManager:SendTouchEvent(x, y, Enum.UserInputState.End)
     end)
 end
 
-local function Parry()
-    local block = getBlock()
-    if block then
-        if firesignal and pcall(firesignal, block.Activated) then return end
-        if getconnections then
-            local ok = pcall(function()
-                for _, c in ipairs(getconnections(block.Activated)) do
-                    if c.Enabled then c:Fire() end
-                end
-            end)
-            if ok then return end
-        end
-        local p, s = block.AbsolutePosition, block.AbsoluteSize
-        if s.X > 0 and s.Y > 0 then
-            clickAt(Vector2.new(p.X + s.X / 2, p.Y + s.Y / 2))
-            return
-        end
-    end
-    local cam = workspace.CurrentCamera
-    local vp = cam and cam.ViewportSize or Vector2.new(1000, 600)
-    clickAt(Vector2.new(vp.X * 0.5, vp.Y * 0.55))
+local function sendMouse(x, y)
+    return pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    end)
 end
 
-local function step(dt)
+local function fireSignal(block)
+    if firesignal and pcall(firesignal, block.Activated) then return true end
+    if getconnections then
+        return pcall(function()
+            for _, c in ipairs(getconnections(block.Activated)) do
+                if c.Enabled then c:Fire() end
+            end
+        end)
+    end
+    return false
+end
+
+local function Parry()
+    if CONFIG.method == "packet" and cap.remote and cap.args then
+        if pcall(function() cap.remote:FireServer(unpack(cap.args, 1, cap.args.n)) end) then
+            return true
+        end
+    end
+
+    local block = getBlock()
+    if not block then return false end
+    local p, s = block.AbsolutePosition, block.AbsoluteSize
+    if s.X <= 0 or s.Y <= 0 then return false end
+    local x = p.X + s.X * (0.34 + math.random() * 0.32)
+    local y = p.Y + s.Y * (0.34 + math.random() * 0.32)
+
+    if CONFIG.method == "touch" then
+        if sendTouch(x, y) then return true end
+        return sendMouse(x, y)
+    elseif CONFIG.method == "click" then
+        if sendMouse(x, y) then return true end
+    end
+    return fireSignal(block)
+end
+
+local function step()
     if not Balls or not isTarget() then return end
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-    local eye = cam.CFrame.Position
+    local hrp = getHRP()
+    if not hrp then return end
+    local me = hrp.Position
     local now = os.clock()
 
     for b in pairs(tracked) do
         if not b.Parent or not b:IsDescendantOf(Balls) then
-            tracked[b] = nil
-            prevPos[b] = nil
-            lastHit[b] = nil
+            tracked[b] = nil prevPos[b] = nil lastHit[b] = nil
         else
             local pos  = b.Position
             local prev = prevPos[b] or pos
             prevPos[b] = pos
 
-            local vel  = (prev - pos).Magnitude / math.max(dt, 1 / 240)
-            local dist = (pos - eye).Magnitude
+            local dist = (pos - me).Magnitude
+            if dist > CONFIG.maxRange then continue end
+            if (prev - me).Magnitude <= dist then continue end
+            if now - (lastHit[b] or 0) < 0.6 then continue end
+            if now - lastParry < CONFIG.cooldown then continue end
 
-            if vel > 1 and dist <= CONFIG.maxRange and (prev - eye).Magnitude > dist then
-                local window = CONFIG.window / 1000
-                if CONFIG.safe then window = window * (0.85 + math.random() * 0.3) end
-                if math.random() * 100 > CONFIG.accuracy then
-                    window = window * (2.0 + math.random() * 0.8)
-                end
-                if (dist / vel) <= window and now - (lastHit[b] or 0) > 0.35 then
-                    lastHit[b] = now
-                    Parry()
+            local radius = CONFIG.parryDist * (1 + (math.random() * 2 - 1) * CONFIG.jitter)
+            if math.random() * 100 > CONFIG.accuracy then radius = radius * 1.8 end
+
+            if dist <= radius then
+                lastHit[b] = now
+                lastParry = now
+                if Parry() and CONFIG.dump then
+                    print(string.format("[Venice] parry @ %.1f (порог %.1f)", dist, radius))
                 end
             end
         end
@@ -449,7 +579,7 @@ local function installEcho()
                 local packed = table.pack(...)
                 if packed.n == 0 then return end
                 task.delay(0.02, function()
-                    pcall(function() v:FireServer(table.unpack(packed, 1, packed.n)) end)
+                    pcall(function() v:FireServer(unpack(packed, 1, packed.n)) end)
                 end)
             end))
         end
@@ -512,7 +642,19 @@ local function restoreBac()
     end
 end
 
--- ============================== наполнение ==============================
+-- ============================== переключатели ==============================
+
+local function cycleMethod()
+    local list = { "packet", "touch", "click", "signal" }
+    for i, m in ipairs(list) do
+        if m == CONFIG.method then
+            CONFIG.method = list[(i % #list) + 1]
+            break
+        end
+    end
+    print("[Venice] метод:", CONFIG.method)
+    updateStatus()
+end
 
 local function cycleMount()
     local modes = { "auto", "hidden", "coregui", "playergui" }
@@ -538,13 +680,44 @@ local function rebuild()
     if ensure and ensure() then setGuiOpen(true) end
 end
 
+-- ============================== наполнение ==============================
+
 local function build()
-    toggleRow("Стелс-режим", "разброс тайминга, ожидание вида", CONFIG.safe, function(v)
-        CONFIG.safe = v
-        if status then
-            status.Text = (v and "safe" or "normal") .. string.format(" · %dмс · %d%%", CONFIG.window, CONFIG.accuracy)
-            status.TextColor3 = v and OKC or SUB
-        end
+    toggleRow("BAC bypass", "debug.info + getfenv", CONFIG.bypass, function(v)
+        CONFIG.bypass = v
+        if v then applyBypass() else dropBypass() end
+    end)
+    task.wait(0.04)
+    buttonRow("Захват пакета", "перевзвести, потом тапни Block", rearm)
+    task.wait(0.04)
+    buttonRow("Показать захват", "ремоут и аргументы в консоль", dumpCapture)
+    task.wait(0.04)
+    buttonRow("Метод", "packet → touch → click → signal", cycleMethod)
+    task.wait(0.04)
+    toggleRow("Auto Parry", "по дистанции от персонажа", CONFIG.autoParry, setParry)
+    task.wait(0.04)
+    sliderRow("Радиус", 5, 30, CONFIG.parryDist, function(v)
+        CONFIG.parryDist = v
+        updateStatus()
+    end)
+    task.wait(0.04)
+    sliderRow("Разброс %", 0, 50, math.floor(CONFIG.jitter * 100), function(v)
+        CONFIG.jitter = v / 100
+        updateStatus()
+    end)
+    task.wait(0.04)
+    sliderRow("Точность %", 40, 100, CONFIG.accuracy, function(v)
+        CONFIG.accuracy = v
+        updateStatus()
+    end)
+    task.wait(0.04)
+    sliderRow("Кулдаун мс", 150, 600, math.floor(CONFIG.cooldown * 1000), function(v)
+        CONFIG.cooldown = v / 1000
+        updateStatus()
+    end)
+    task.wait(0.04)
+    toggleRow("Лог парирований", "дистанция в консоль", CONFIG.dump, function(v)
+        CONFIG.dump = v
     end)
     task.wait(0.04)
     toggleRow("BAC эхо", "повтор Security-ремоутов", CONFIG.echo, function(v)
@@ -554,22 +727,6 @@ local function build()
     buttonRow("Снять проверки", "anti/check скрипты, DeviceChecker", removeBac)
     task.wait(0.04)
     buttonRow("Вернуть проверки", "включить скрипты обратно", restoreBac)
-    task.wait(0.04)
-    toggleRow("Auto Parry", "через Hotbar.Block", CONFIG.autoParry, setParry)
-    task.wait(0.04)
-    sliderRow("Окно (мс)", 20, 300, CONFIG.window, function(v)
-        CONFIG.window = v
-        if status then
-            status.Text = string.format("%s · %dмс · %d%%", CONFIG.safe and "safe" or "normal", CONFIG.window, CONFIG.accuracy)
-        end
-    end)
-    task.wait(0.04)
-    sliderRow("Точность %", 40, 100, CONFIG.accuracy, function(v)
-        CONFIG.accuracy = v
-        if status then
-            status.Text = string.format("%s · %dмс · %d%%", CONFIG.safe and "safe" or "normal", CONFIG.window, CONFIG.accuracy)
-        end
-    end)
     task.wait(0.04)
     toggleRow("Headless", "голова + face прозрачные", CONFIG.headless, function(v)
         CONFIG.headless = v
@@ -594,10 +751,13 @@ local function build()
     buttonRow("Пересоздать GUI", "перенести в выбранный контейнер", rebuild)
     task.wait(0.04)
     buttonRow("Выгрузить", "удалить GUI и все связи", function()
+        capturing = false
         if loopConn then loopConn:Disconnect() end
         if childConn then childConn:Disconnect() end
         if cosmeticConn then cosmeticConn:Disconnect() end
         removeEcho()
+        dropBypass()
+        if oldNamecall then pcall(function() hookmetamethod(game, "__namecall", oldNamecall) end) end
         for _, c in ipairs(getgenv().VeniceBBConns) do pcall(function() c:Disconnect() end) end
         if gui then gui:Destroy() end
         getgenv().VeniceBB = nil
@@ -607,6 +767,22 @@ end
 -- ============================== сборка GUI ==============================
 
 local open = false
+
+updateStatus = function()
+    if not status then return end
+    if CONFIG.method == "packet" then
+        if cap.remote then
+            status.Text = string.format("packet · %.0fст · %d%%", CONFIG.parryDist, CONFIG.accuracy)
+            status.TextColor3 = OKC
+        else
+            status.Text = "packet · тапни Block для захвата"
+            status.TextColor3 = WARNC
+        end
+    else
+        status.Text = string.format("%s · %.0fст · %d%%", CONFIG.method, CONFIG.parryDist, CONFIG.accuracy)
+        status.TextColor3 = CONFIG.autoParry and OKC or SUB
+    end
+end
 
 setGuiOpen = function(force)
     if not gui or not main then return end
@@ -648,7 +824,7 @@ local function createGui()
     main = Instance.new("Frame")
     main.AnchorPoint = Vector2.new(0.5, 0.5)
     main.Position = UDim2.fromScale(0.5, 0.5)
-    main.Size = UDim2.fromOffset(340, 470)
+    main.Size = UDim2.fromOffset(340, 500)
     main.BackgroundColor3 = BG
     main.BackgroundTransparency = 0.03
     main.BorderSizePixel = 0
@@ -690,7 +866,7 @@ local function createGui()
     status.BackgroundTransparency = 1
     status.Font = Enum.Font.Gotham
     status.TextSize = 10
-    status.TextColor3 = OKC
+    status.TextColor3 = WARNC
     status.TextXAlignment = Enum.TextXAlignment.Left
     status.Text = "контейнер: " .. mountLabel
     status.Parent = header
@@ -763,6 +939,7 @@ ensure = function()
     if not createGui() then return false end
     built = true
     build()
+    updateStatus()
     return true
 end
 
@@ -779,3 +956,7 @@ track(UserInputService.InputBegan:Connect(function(input, gp)
         end
     end
 end))
+
+print(string.format("[Venice] v16 · %s · радиус %d · bypass %s",
+    CONFIG.method, CONFIG.parryDist, tostring(CONFIG.bypass)))
+print("[Venice] тапни Block один раз — пойдёт захват пакета")
