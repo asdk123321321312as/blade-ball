@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v18 ]]
+--[[ Blade Ball — Venice Hub v19 ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 if getgenv().VeniceBBConns then
@@ -30,6 +30,7 @@ local CONFIG = {
     distanceToParry = 0.65,
     emergencyRadius = 10,
     clashDistance   = 22,
+    maxRange        = 170,
     clashSpeed      = 0.01,
     normalSpeed     = 0.05,
     visuals         = true,
@@ -64,11 +65,9 @@ local function applyBypass()
     local origInfo = getrenv().debug.info
     local newInfo
     newInfo = hookfunction(origInfo, function(f, t)
-        if type(f) == "function" then
-            if t == nil or t == "a" then return origInfo(f, t) end
-            return "[C]"
-        end
-        if f == 4 and t == "s" then
+        if t ~= "s" then return origInfo(f, t) end
+        if type(f) == "function" then return "[C]" end
+        if f == 3 or f == 4 or f == 5 then
             return "ReplicatedStorage.Controllers.SwordsController"
         end
         return origInfo(f, t)
@@ -78,9 +77,9 @@ local function applyBypass()
     local origEnv = getrenv().getfenv
     local newEnv
     newEnv = hookfunction(origEnv, function(l)
-        if type(l) == "number" and l >= 1 and l <= 10 then return origEnv(10) end
         if type(l) == "function" then return origEnv(l) end
-        return origEnv(1)
+        local lvl = (type(l) == "number" and l or 1) + 1
+        return origEnv(lvl)
     end)
     getgenv().VeniceBBOrigEnv, getgenv().VeniceBBEnv = origEnv, newEnv
     return true
@@ -98,13 +97,21 @@ if CONFIG.bypass then applyBypass() end
 -- ============================== захват пакета ==============================
 
 local cap = { remote = nil, args = nil }
-local capturing = true
+local capturing = false
 local attempts = 0
 local oldNamecall = nil
 local updateStatus = function() end
 
+local function uninstallCapture()
+    if not oldNamecall then return end
+    pcall(function() hookmetamethod(game, "__namecall", oldNamecall) end)
+    oldNamecall = nil
+end
+
 local function installCapture()
     if oldNamecall or not (hookmetamethod and getnamecallmethod) then return end
+    capturing = true
+    attempts = 0
     pcall(function()
         oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
             if capturing and getnamecallmethod() == "FireServer"
@@ -112,7 +119,7 @@ local function installCapture()
                 local full = self:GetFullName()
                 local looks = self.Name:match("[Pp]arry") or self.Name:match("[Bb]lock")
                     or full:match("[Pp]arry") or full:match("[Bb]lock")
-                if looks or attempts < 6 then
+                if looks or attempts < 5 then
                     attempts = attempts + 1
                     if looks or not cap.remote then
                         cap.remote = self
@@ -124,7 +131,10 @@ local function installCapture()
                                 print("   ", i, typeof(cap.args[i]), tostring(cap.args[i]))
                             end
                         end
-                        if looks then capturing = false end
+                        if looks then
+                            capturing = false
+                            uninstallCapture()
+                        end
                         task.spawn(updateStatus)
                     end
                 end
@@ -132,11 +142,19 @@ local function installCapture()
             return oldNamecall(self, ...)
         end)
     end)
+    task.delay(20, function()
+        if capturing then
+            capturing = false
+            uninstallCapture()
+            print("[Venice] захват по таймауту снят, нажми Block и перевзведи")
+        end
+    end)
 end
 
 local function rearm()
-    cap.remote, cap.args, attempts = nil, nil, 0
-    capturing = true
+    cap.remote, cap.args = nil, nil
+    uninstallCapture()
+    installCapture()
     print("[Venice] захват перевзведён, нажми Block")
     updateStatus()
 end
@@ -161,14 +179,12 @@ local function mountGui(g)
     if ok and typeof(h) == "Instance" then
         if pcall(function() g.Parent = h end) then return "hidden" end
     end
-
     local prot = protectgui or protect_gui or (syn and syn.protect_gui)
     local okc, core = pcall(function() return game:GetService("CoreGui") end)
     if okc and core then
         if prot then pcall(prot, g) end
         if pcall(function() g.Parent = core end) then return "core" end
     end
-
     local pg = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 10)
     if pg and pcall(function() g.Parent = pg end) then return "playergui" end
     return nil
@@ -359,8 +375,7 @@ local function dropRing()
 end
 
 local function ringState()
-    local active = CONFIG.autoParry and CONFIG.visuals and CONFIG.showRadius
-    if active then ensureRing() else dropRing() end
+    if CONFIG.autoParry and CONFIG.visuals and CONFIG.showRadius then ensureRing() else dropRing() end
 end
 
 -- ============================== внешность ==============================
@@ -429,7 +444,6 @@ end
 local Balls = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 5)
 local blockCache = nil
 local LastClick, LastBallHit, IsParrying = 0, nil, false
-local frameCounter = 0
 
 local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
@@ -477,20 +491,6 @@ local function Parry()
     return sendMouse(x, y)
 end
 
-local function GetBall()
-    if not Balls then return nil end
-    local children = Balls:GetChildren()
-    for i = 1, #children do
-        local v = children[i]
-        if v:GetAttribute("realBall") == true then return v end
-    end
-    for i = 1, #children do
-        local v = children[i]
-        if v:IsA("BasePart") and v.AssemblyLinearVelocity.Magnitude > 15 then return v end
-    end
-    return nil
-end
-
 local function IsTargeted()
     local char = LP.Character
     if not char then return false end
@@ -534,61 +534,69 @@ local function UpdateVisuals(root, distance, state)
     end
 end
 
-local function check(visualPass)
+local function BestBall(origin)
+    local best, bestTTL, bestDist = nil, math.huge, 0
+    if not Balls then return nil end
+    local children = Balls:GetChildren()
+    for i = 1, #children do
+        local b = children[i]
+        if b:GetAttribute("realBall") == true then
+            local pos = b.Position
+            local vel = b.AssemblyLinearVelocity
+            local speed = vel.Magnitude
+            if speed > 1 then
+                local delta = origin - pos
+                local dist = delta.Magnitude
+                if dist <= CONFIG.maxRange and delta.Unit:Dot(vel.Unit) > 0 then
+                    local ttl = dist / speed
+                    if ttl < bestTTL then best, bestTTL, bestDist = b, ttl, dist end
+                end
+            end
+        end
+    end
+    return best, bestTTL, bestDist
+end
+
+track(RunService.PostSimulation:Connect(function()
     if not CONFIG.autoParry then
-        if visualPass and ring then ring.Transparency = 1 end
+        if ring then ring.Transparency = 1 end
         return
     end
 
     local char = LP.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then
-        if visualPass and ring then ring.Transparency = 1 end
+        if ring then ring.Transparency = 1 end
         return
     end
 
-    local ball = GetBall()
+    local origin = root.Position
+    local ball, ttl, distance = BestBall(origin)
     if not ball then
-        if visualPass and ring then ring.Transparency = 1 end
+        LastBallHit = nil
+        if ring then ring.Transparency = 1 end
         return
     end
-
-    local ballPos, playerPos = ball.Position, root.Position
-    local velocity = ball.AssemblyLinearVelocity
-    local speed = velocity.Magnitude
-    local distance = (playerPos - ballPos).Magnitude
-
-    local dot = (playerPos - ballPos).Unit:Dot(velocity.Unit)
-    if dot < 0 then LastBallHit = nil end
 
     local targeted = IsTargeted()
     local isClashing = targeted and distance <= CONFIG.clashDistance
 
-    if visualPass then
-        frameCounter = frameCounter + 1
-        if ring then
-            ring.Transparency = 0.3
-            UpdateVisuals(root, distance, isClashing and "clash" or (targeted and "target" or "neutral"))
-        end
+    if ring then
+        ring.Transparency = 0.3
+        UpdateVisuals(root, distance, isClashing and "clash" or (targeted and "target" or "neutral"))
     end
 
     if isClashing then
         SendParry(true, ball)
-    elseif targeted and dot > 0 then
+    elseif targeted then
         local ping = (CONFIG.pingBased and NetworkStats and NetworkStats.Value / 1000) or 0.04
-        local timeToHit = distance / math.max(speed, 1)
         local threshold = CONFIG.distanceToParry + (CONFIG.pingBased and ping * CONFIG.pingOffset or 0)
-
-        if speed > 150 then threshold = threshold * 1.15 end
-
-        if timeToHit <= threshold or distance <= CONFIG.emergencyRadius then
+        if ttl > 0.15 then threshold = threshold * 1.15 end
+        if ttl <= threshold or distance <= CONFIG.emergencyRadius then
             SendParry(false, ball)
         end
     end
-end
-
-track(RunService.PreSimulation:Connect(function() check(false) end))
-track(RunService.PostSimulation:Connect(function() check(true) end))
+end))
 
 track(LP.CharacterAdded:Connect(function()
     LastBallHit = nil
@@ -655,6 +663,11 @@ local function build()
         updateStatus()
     end)
     task.wait(0.04)
+    sliderRow("Дальность", 60, 250, CONFIG.maxRange, function(v)
+        CONFIG.maxRange = v
+        updateStatus()
+    end)
+    task.wait(0.04)
     toggleRow("Учёт пинга", "прогноз по Data Ping", CONFIG.pingBased, function(v)
         CONFIG.pingBased = v
         updateStatus()
@@ -691,10 +704,10 @@ local function build()
     task.wait(0.04)
     buttonRow("Выгрузить", "удалить GUI, кольцо, связи", function()
         capturing = false
+        uninstallCapture()
         dropRing()
         if korbloxMesh then pcall(function() korbloxMesh:Destroy() end) end
         dropBypass()
-        if oldNamecall then pcall(function() hookmetamethod(game, "__namecall", oldNamecall) end) end
         for _, c in ipairs(getgenv().VeniceBBConns) do pcall(function() c:Disconnect() end) end
         if gui then gui:Destroy() end
         getgenv().VeniceBB = nil
@@ -896,4 +909,4 @@ track(UserInputService.InputBegan:Connect(function(input, gp)
     end
 end))
 
-print("[Venice] v18 · тапни Block один раз для захвата пакета")
+print("[Venice] v19 · тапни Block один раз для захвата пакета")
