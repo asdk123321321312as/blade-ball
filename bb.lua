@@ -1,4 +1,4 @@
---[[ Blade Ball — Venice Hub v16 | bypass 1 ур. + захват пакета + GUI ]]
+--[[ Blade Ball — Venice Hub v17 ]]
 
 if getgenv().VeniceBB then pcall(function() getgenv().VeniceBB:Destroy() end) end
 if getgenv().VeniceBBConns then
@@ -14,7 +14,7 @@ local RunService          = ref(game:GetService("RunService"))
 local TweenService        = ref(game:GetService("TweenService"))
 local UserInputService    = ref(game:GetService("UserInputService"))
 local VirtualInputManager = ref(game:GetService("VirtualInputManager"))
-local ReplicatedStorage   = ref(game:GetService("ReplicatedStorage"))
+local Stats               = ref(game:GetService("Stats"))
 
 local LP = Players.LocalPlayer
 while not LP do task.wait() end
@@ -22,20 +22,19 @@ while not LP do task.wait() end
 local function track(c) table.insert(getgenv().VeniceBBConns, c) return c end
 
 local CONFIG = {
-    bypass    = true,
-    method    = "packet",  -- packet | touch | click | signal
-    parryDist = 12,
-    jitter    = 0.18,
-    accuracy  = 85,
-    cooldown  = 0.28,
-    maxRange  = 170,
-    autoParry = false,
-    dump      = true,
-    safe      = true,
-    echo      = false,
-    headless  = false,
-    korblox   = false,
-    mount     = "auto",
+    bypass         = true,
+    method         = "packet",   -- packet | touch | click
+    autoParry      = false,
+    pingBased      = true,
+    pingOffset     = 1.95,
+    distanceToParry= 0.65,
+    emergencyRadius= 10,
+    clashDistance  = 22,
+    clashSpeed     = 0.01,
+    normalSpeed    = 0.05,
+    visuals        = true,
+    showRadius     = true,
+    dump           = false,
 }
 
 local ACCENT = Color3.fromRGB(152, 132, 255)
@@ -53,7 +52,7 @@ local function tw(o, t, p, s, d)
     return T
 end
 
--- ============================== уровень 1 ==============================
+-- ============================== bypass ==============================
 
 local function applyBypass()
     if not (hookfunction and getrenv) then return false end
@@ -100,8 +99,7 @@ local cap = { remote = nil, args = nil }
 local capturing = true
 local attempts = 0
 local oldNamecall = nil
-
-local function updateStatus() end
+local updateStatus = function() end
 
 local function installCapture()
     if oldNamecall or not (hookmetamethod and getnamecallmethod) then return end
@@ -155,40 +153,22 @@ installCapture()
 
 local gui, main, body, status, setGuiOpen, built = nil, nil, nil, nil, nil, false
 local order = 0
-local mountLabel = "—"
 
-local function candidates()
-    local out = {}
-    local mode = CONFIG.mount
-
-    if mode == "auto" or mode == "hidden" then
-        local ok, h = pcall(function() return gethui and gethui() end)
-        if ok and typeof(h) == "Instance" then table.insert(out, { h, "hidden" }) end
+local function mountGui(g)
+    local ok, h = pcall(function() return gethui and gethui() end)
+    if ok and typeof(h) == "Instance" then
+        if pcall(function() g.Parent = h end) then return "hidden" end
     end
 
     local prot = protectgui or protect_gui or (syn and syn.protect_gui)
     local okc, core = pcall(function() return game:GetService("CoreGui") end)
-    if okc and core and (mode == "auto" or mode == "coregui") then
-        if prot then table.insert(out, { core, "core+protect", prot }) end
-        table.insert(out, { core, "coregui" })
-    end
-
-    if mode == "auto" or mode == "playergui" then
-        local pg = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 10)
-        if pg then table.insert(out, { pg, "playergui" }) end
-    end
-    return out
-end
-
-local function mountGui(g)
-    for _, c in ipairs(candidates()) do
-        local container, label, prot = c[1], c[2], c[3]
+    if okc and core then
         if prot then pcall(prot, g) end
-        if pcall(function() g.Parent = container end) and g.Parent == container then
-            mountLabel = label
-            return label
-        end
+        if pcall(function() g.Parent = core end) then return "core" end
     end
+
+    local pg = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 10)
+    if pg and pcall(function() g.Parent = pg end) then return "playergui" end
     return nil
 end
 
@@ -350,33 +330,47 @@ local function buttonRow(tx, dx, cb)
     return r
 end
 
--- ============================== парирование ==============================
+-- ============================== кольцо ==============================
 
-local Balls
-local tracked, prevPos, lastHit = {}, {}, {}
-local loopConn, childConn = nil, nil
-local blockCache, lastParry = nil, 0
+local ring, ringMesh
 
-local function getBalls()
-    if Balls and Balls.Parent then return Balls end
-    Balls = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 20)
-    return Balls
+local function ensureRing()
+    if ring and ring.Parent then return end
+    ring = Instance.new("Part")
+    ring.Name = "SmartCircle"
+    ring.Anchored = true
+    ring.CanCollide = false
+    ring.CanQuery = false
+    ring.CanTouch = false
+    ring.CastShadow = false
+    ring.Transparency = 0.3
+    ring.Material = Enum.Material.Neon
+    ring.Size = Vector3.new(1, 1, 1)
+    ringMesh = Instance.new("SpecialMesh", ring)
+    ringMesh.MeshId = "rbxassetid://3270017"
+    ring.Parent = workspace
 end
 
-local function verifyBall(b)
-    return typeof(b) == "Instance" and b:IsA("BasePart")
-        and b:IsDescendantOf(Balls) and b:GetAttribute("realBall") == true
+local function dropRing()
+    if ring then pcall(function() ring:Destroy() end) end
+    ring, ringMesh = nil, nil
 end
 
-local function getHRP()
-    local c = LP.Character
-    local h = c and c:FindFirstChild("HumanoidRootPart")
-    if h and h:IsA("BasePart") then return h end
+local function ringState()
+    local active = CONFIG.autoParry and CONFIG.visuals and CONFIG.showRadius
+    if active then ensureRing() else dropRing() end
 end
 
-local function isTarget()
-    return LP.Character ~= nil and LP.Character:FindFirstChild("Highlight") ~= nil
-end
+-- ============================== парринг ==============================
+
+local Balls = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 5)
+local blockCache = nil
+local LastClick, LastBallHit, IsParrying = 0, nil, false
+local frameCounter = 0
+
+local NetworkStats = Stats:FindFirstChild("Network")
+    and Stats.Network:FindFirstChild("ServerStatsItem")
+    and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
 local function getBlock()
     if blockCache and blockCache.Parent then return blockCache end
@@ -401,251 +395,143 @@ local function sendMouse(x, y)
     end)
 end
 
-local function fireSignal(block)
-    if firesignal and pcall(firesignal, block.Activated) then return true end
-    if getconnections then
-        return pcall(function()
-            for _, c in ipairs(getconnections(block.Activated)) do
-                if c.Enabled then c:Fire() end
-            end
-        end)
-    end
-    return false
-end
-
 local function Parry()
     if CONFIG.method == "packet" and cap.remote and cap.args then
         if pcall(function() cap.remote:FireServer(unpack(cap.args, 1, cap.args.n)) end) then
             return true
         end
     end
-
     local block = getBlock()
     if not block then return false end
     local p, s = block.AbsolutePosition, block.AbsoluteSize
     if s.X <= 0 or s.Y <= 0 then return false end
     local x = p.X + s.X * (0.34 + math.random() * 0.32)
     local y = p.Y + s.Y * (0.34 + math.random() * 0.32)
-
     if CONFIG.method == "touch" then
         if sendTouch(x, y) then return true end
         return sendMouse(x, y)
-    elseif CONFIG.method == "click" then
-        if sendMouse(x, y) then return true end
     end
-    return fireSignal(block)
+    return sendMouse(x, y)
 end
 
-local function step()
-    if not Balls or not isTarget() then return end
-    local hrp = getHRP()
-    if not hrp then return end
-    local me = hrp.Position
-    local now = os.clock()
-
-    for b in pairs(tracked) do
-        if not b.Parent or not b:IsDescendantOf(Balls) then
-            tracked[b] = nil prevPos[b] = nil lastHit[b] = nil
-        else
-            local pos  = b.Position
-            local prev = prevPos[b] or pos
-            prevPos[b] = pos
-
-            local dist = (pos - me).Magnitude
-            if dist > CONFIG.maxRange then continue end
-            if (prev - me).Magnitude <= dist then continue end
-            if now - (lastHit[b] or 0) < 0.6 then continue end
-            if now - lastParry < CONFIG.cooldown then continue end
-
-            local radius = CONFIG.parryDist * (1 + (math.random() * 2 - 1) * CONFIG.jitter)
-            if math.random() * 100 > CONFIG.accuracy then radius = radius * 1.8 end
-
-            if dist <= radius then
-                lastHit[b] = now
-                lastParry = now
-                if Parry() and CONFIG.dump then
-                    print(string.format("[Venice] parry @ %.1f (порог %.1f)", dist, radius))
-                end
-            end
-        end
+local function GetBall()
+    if not Balls then return nil end
+    local children = Balls:GetChildren()
+    for i = 1, #children do
+        local v = children[i]
+        if v:GetAttribute("realBall") == true then return v end
     end
+    for i = 1, #children do
+        local v = children[i]
+        if v:IsA("BasePart") and v.AssemblyLinearVelocity.Magnitude > 15 then return v end
+    end
+    return nil
 end
 
-local function addBall(b)
-    if verifyBall(b) then
-        tracked[b] = true
-        prevPos[b] = b.Position
-    end
-end
-
-local function setParry(on)
-    CONFIG.autoParry = on
-    if loopConn then loopConn:Disconnect() loopConn = nil end
-    if childConn then childConn:Disconnect() childConn = nil end
-    if on then
-        local balls = getBalls()
-        if balls then
-            for _, b in ipairs(balls:GetChildren()) do addBall(b) end
-            childConn = balls.ChildAdded:Connect(addBall)
-        end
-        loopConn = RunService.RenderStepped:Connect(step)
-    end
-end
-
--- ============================== внешность ==============================
-
-local korbloxMesh = nil
-local applying = false
-local cosmeticConn = nil
-
-local function waitAppearance()
+local function IsTargeted()
     local char = LP.Character
-    if not char then return nil end
-    if CONFIG.safe and not LP:HasAppearanceLoaded() then
-        local t = 0
-        while not LP:HasAppearanceLoaded() and t < 40 do
-            task.wait(0.1)
-            t = t + 1
+    if not char then return false end
+    return char:GetAttribute("Targeted") == true or char:FindFirstChild("Highlight") ~= nil
+end
+
+local function SendParry(isClashing, ball)
+    if not CONFIG.autoParry or IsParrying then return end
+    local now = os.clock()
+    local cd = isClashing and CONFIG.clashSpeed or CONFIG.normalSpeed
+
+    if not isClashing and LastBallHit == ball and (now - LastClick) < 0.5 then return end
+    if (now - LastClick) < cd then return end
+
+    IsParrying = true
+    LastClick = now
+    LastBallHit = ball
+
+    if Parry() and CONFIG.dump then
+        print(string.format("[Venice] parry · %s", isClashing and "clash" or "predict"))
+    end
+
+    task.delay(cd, function() IsParrying = false end)
+end
+
+local function UpdateVisuals(root, distance, state)
+    if not ring or not ringMesh then return end
+    ring.CFrame = root.CFrame * CFrame.new(0, -2.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
+    local targetSize = math.clamp(distance * 0.8, 5, 65)
+    ringMesh.Scale = ringMesh.Scale:Lerp(Vector3.new(targetSize, targetSize, 0.5), 0.5)
+
+    if state == "clash" then
+        ring.Color = Color3.fromRGB(255, 0, 0)
+        ring.Transparency = 0.05
+    elseif state == "target" then
+        ring.Color = Color3.fromRGB(0, 255, 255)
+        ring.Transparency = 0.1
+    else
+        ring.Color = Color3.fromRGB(150, 240, 255)
+        ring.Transparency = 0.5
+    end
+end
+
+track(RunService.PostSimulation:Connect(function()
+    if not CONFIG.autoParry then
+        if ring then ring.Transparency = 1 end
+        return
+    end
+
+    local char = LP.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then
+        if ring then ring.Transparency = 1 end
+        return
+    end
+
+    local ball = GetBall()
+    if not ball then
+        if ring then ring.Transparency = 1 end
+        return
+    end
+
+    local ballPos, playerPos = ball.Position, root.Position
+    local velocity = ball.AssemblyLinearVelocity
+    local speed = velocity.Magnitude
+    local distance = (playerPos - ballPos).Magnitude
+
+    local dot = (playerPos - ballPos).Unit:Dot(velocity.Unit)
+    if dot < 0 then LastBallHit = nil end
+
+    local targeted = IsTargeted()
+    local isClashing = targeted and distance <= CONFIG.clashDistance
+
+    frameCounter = frameCounter + 1
+    if ring and frameCounter % 2 == 0 then
+        ring.Transparency = 0.3
+        UpdateVisuals(root, distance, isClashing and "clash" or (targeted and "target" or "neutral"))
+    end
+
+    if isClashing then
+        SendParry(true, ball)
+    elseif targeted and dot > 0 then
+        local ping = (CONFIG.pingBased and NetworkStats and NetworkStats.Value / 1000) or 0.04
+        local timeToHit = distance / math.max(speed, 1)
+        local threshold = CONFIG.distanceToParry + (CONFIG.pingBased and ping * CONFIG.pingOffset or 0)
+
+        if speed > 150 then threshold = threshold * 1.15 end
+
+        if timeToHit <= threshold or distance <= CONFIG.emergencyRadius then
+            SendParry(false, ball)
         end
     end
-    return LP.Character
-end
+end))
 
-local function applyHeadless(on)
-    local char = waitAppearance()
-    if not char then return end
-    local head = char:FindFirstChild("Head")
-    if not head then return end
-    head.Transparency = on and 1 or 0
-    for _, v in ipairs(head:GetChildren()) do
-        if v:IsA("Decal") then v.Transparency = on and 1 or 0 end
-    end
-end
+track(LP.CharacterAdded:Connect(function()
+    LastBallHit = nil
+    IsParrying = false
+    blockCache = nil
+end))
 
-local function applyKorblox(on)
-    local char = waitAppearance()
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.RigType ~= Enum.HumanoidRigType.R6 then return end
-    if on then
-        if korbloxMesh and korbloxMesh.Parent then korbloxMesh:Destroy() end
-        local m = Instance.new("CharacterMesh")
-        m.Name = "VeniceKorblox"
-        m.BodyPart = Enum.BodyPart.RightLeg
-        m.MeshId = 101851696
-        m.OverlayTextureId = 101851254
-        m.Parent = char
-        korbloxMesh = m
-    elseif korbloxMesh then
-        korbloxMesh:Destroy()
-        korbloxMesh = nil
-    end
-end
-
-local function refreshCosmetics()
-    if applying then return end
-    applying = true
-    task.spawn(function()
-        if CONFIG.safe then task.wait(1.2) else task.wait(0.2) end
-        if CONFIG.headless then applyHeadless(true) end
-        if CONFIG.safe then task.wait(0.4) end
-        if CONFIG.korblox then applyKorblox(true) end
-        applying = false
-    end)
-end
-
-local function ensureCosmeticConn()
-    if cosmeticConn then return end
-    cosmeticConn = LP.CharacterAdded:Connect(function()
-        blockCache = nil
-        task.wait(1)
-        refreshCosmetics()
-    end)
-end
-
--- ============================== BAC ==============================
-
-local echoed, echoConns, disabledScripts = {}, {}, {}
-
-local function installEcho()
-    if CONFIG.echo then return end
-    CONFIG.echo = true
-    local sec = ReplicatedStorage:FindFirstChild("Security")
-    if not sec then return end
-    for _, v in ipairs(sec:GetDescendants()) do
-        if v:IsA("RemoteEvent") and not echoed[v] then
-            echoed[v] = true
-            table.insert(echoConns, v.OnClientEvent:Connect(function(...)
-                local packed = table.pack(...)
-                if packed.n == 0 then return end
-                task.delay(0.02, function()
-                    pcall(function() v:FireServer(unpack(packed, 1, packed.n)) end)
-                end)
-            end))
-        end
-    end
-end
-
-local function removeEcho()
-    CONFIG.echo = false
-    for _, c in ipairs(echoConns) do pcall(function() c:Disconnect() end) end
-    table.clear(echoConns)
-    table.clear(echoed)
-end
-
-local function removeBac()
-    if status then
-        status.Text = "снимаю проверки..."
-        status.TextColor3 = WARNC
-    end
-
-    local function killScripts(c)
-        if not c then return end
-        for _, v in ipairs(c:GetChildren()) do
-            if v:IsA("BaseScript") and not v.Name:match("[Dd]evice")
-                and (v.Name:match("[Aa]nti") or v.Name:match("BAC") or v.Name:match("[Cc]heck")) then
-                pcall(function() v.Disabled = true end)
-                table.insert(disabledScripts, v)
-            end
-        end
-    end
-    killScripts(LP.PlayerScripts)
-    killScripts(LP.PlayerScripts:FindFirstChild("Client"))
-
-    local sec = ReplicatedStorage:FindFirstChild("Security")
-    if sec then
-        for _, v in ipairs(sec:GetDescendants()) do
-            if v:IsA("BaseScript") then
-                pcall(function() v.Disabled = true end)
-                table.insert(disabledScripts, v)
-            end
-        end
-    end
-
-    task.wait(0.4)
-    local dc = LP.PlayerScripts:FindFirstChild("Client")
-    local dev = dc and dc:FindFirstChild("DeviceChecker")
-    if dev then pcall(function() dev:Destroy() end) end
-
-    if status then
-        status.Text = string.format("снято %d · перезаход вернёт", #disabledScripts)
-        status.TextColor3 = OKC
-    end
-end
-
-local function restoreBac()
-    for _, v in ipairs(disabledScripts) do pcall(function() v.Disabled = false end) end
-    table.clear(disabledScripts)
-    if status then
-        status.Text = "проверки включены обратно"
-        status.TextColor3 = OKC
-    end
-end
-
--- ============================== переключатели ==============================
+-- ============================== наполнение ==============================
 
 local function cycleMethod()
-    local list = { "packet", "touch", "click", "signal" }
+    local list = { "packet", "touch", "click" }
     for i, m in ipairs(list) do
         if m == CONFIG.method then
             CONFIG.method = list[(i % #list) + 1]
@@ -655,32 +541,6 @@ local function cycleMethod()
     print("[Venice] метод:", CONFIG.method)
     updateStatus()
 end
-
-local function cycleMount()
-    local modes = { "auto", "hidden", "coregui", "playergui" }
-    for i, m in ipairs(modes) do
-        if m == CONFIG.mount then
-            CONFIG.mount = modes[(i % #modes) + 1]
-            break
-        end
-    end
-    if status then
-        status.Text = "контейнер: " .. CONFIG.mount
-        status.TextColor3 = WARNC
-    end
-end
-
-local function rebuild()
-    if gui then pcall(function() gui:Destroy() end) end
-    gui, main, body, status = nil, nil, nil, nil
-    built = false
-    order = 0
-    if setGuiOpen then setGuiOpen(false) end
-    task.wait(0.2)
-    if ensure and ensure() then setGuiOpen(true) end
-end
-
--- ============================== наполнение ==============================
 
 local function build()
     toggleRow("BAC bypass", "debug.info + getfenv", CONFIG.bypass, function(v)
@@ -692,70 +552,66 @@ local function build()
     task.wait(0.04)
     buttonRow("Показать захват", "ремоут и аргументы в консоль", dumpCapture)
     task.wait(0.04)
-    buttonRow("Метод", "packet → touch → click → signal", cycleMethod)
+    buttonRow("Метод", "packet → touch → click", cycleMethod)
     task.wait(0.04)
-    toggleRow("Auto Parry", "по дистанции от персонажа", CONFIG.autoParry, setParry)
-    task.wait(0.04)
-    sliderRow("Радиус", 5, 30, CONFIG.parryDist, function(v)
-        CONFIG.parryDist = v
+    toggleRow("Auto Parry", "L — то же самое", CONFIG.autoParry, function(v)
+        CONFIG.autoParry = v
+        ringState()
         updateStatus()
     end)
     task.wait(0.04)
-    sliderRow("Разброс %", 0, 50, math.floor(CONFIG.jitter * 100), function(v)
-        CONFIG.jitter = v / 100
+    toggleRow("Visuals", "кольцо на земле", CONFIG.visuals, function(v)
+        CONFIG.visuals = v
+        ringState()
+    end)
+    task.wait(0.04)
+    toggleRow("Показывать радиус", "скрыть кольцо", CONFIG.showRadius, function(v)
+        CONFIG.showRadius = v
+        ringState()
+    end)
+    task.wait(0.04)
+    sliderRow("Порог (мс×100)", 10, 150, math.floor(CONFIG.distanceToParry * 100), function(v)
+        CONFIG.distanceToParry = v / 100
         updateStatus()
     end)
     task.wait(0.04)
-    sliderRow("Точность %", 40, 100, CONFIG.accuracy, function(v)
-        CONFIG.accuracy = v
+    sliderRow("Аварийный радиус", 3, 30, CONFIG.emergencyRadius, function(v)
+        CONFIG.emergencyRadius = v
         updateStatus()
     end)
     task.wait(0.04)
-    sliderRow("Кулдаун мс", 150, 600, math.floor(CONFIG.cooldown * 1000), function(v)
-        CONFIG.cooldown = v / 1000
+    sliderRow("Клаш-зона", 8, 40, CONFIG.clashDistance, function(v)
+        CONFIG.clashDistance = v
         updateStatus()
     end)
     task.wait(0.04)
-    toggleRow("Лог парирований", "дистанция в консоль", CONFIG.dump, function(v)
+    toggleRow("Учёт пинга", "прогноз по Data Ping", CONFIG.pingBased, function(v)
+        CONFIG.pingBased = v
+        updateStatus()
+    end)
+    task.wait(0.04)
+    sliderRow("Пинг-множитель", 5, 40, math.floor(CONFIG.pingOffset * 10), function(v)
+        CONFIG.pingOffset = v / 10
+        updateStatus()
+    end)
+    task.wait(0.04)
+    sliderRow("Кулдаун клаша мс", 5, 100, math.floor(CONFIG.clashSpeed * 1000), function(v)
+        CONFIG.clashSpeed = v / 1000
+        updateStatus()
+    end)
+    task.wait(0.04)
+    sliderRow("Кулдаун мс", 20, 150, math.floor(CONFIG.normalSpeed * 1000), function(v)
+        CONFIG.normalSpeed = v / 1000
+        updateStatus()
+    end)
+    task.wait(0.04)
+    toggleRow("Лог", "срабатывания в консоль", CONFIG.dump, function(v)
         CONFIG.dump = v
     end)
     task.wait(0.04)
-    toggleRow("BAC эхо", "повтор Security-ремоутов", CONFIG.echo, function(v)
-        if v then installEcho() else removeEcho() end
-    end)
-    task.wait(0.04)
-    buttonRow("Снять проверки", "anti/check скрипты, DeviceChecker", removeBac)
-    task.wait(0.04)
-    buttonRow("Вернуть проверки", "включить скрипты обратно", restoreBac)
-    task.wait(0.04)
-    toggleRow("Headless", "голова + face прозрачные", CONFIG.headless, function(v)
-        CONFIG.headless = v
-        ensureCosmeticConn()
-        task.spawn(function()
-            if CONFIG.safe then task.wait(1.2) end
-            applyHeadless(v)
-        end)
-    end)
-    task.wait(0.04)
-    toggleRow("Korblox", "CharacterMesh на правую ногу", CONFIG.korblox, function(v)
-        CONFIG.korblox = v
-        ensureCosmeticConn()
-        task.spawn(function()
-            if CONFIG.safe then task.wait(1.2) end
-            applyKorblox(v)
-        end)
-    end)
-    task.wait(0.04)
-    buttonRow("Контейнер GUI", "auto → hidden → coregui → playergui", cycleMount)
-    task.wait(0.04)
-    buttonRow("Пересоздать GUI", "перенести в выбранный контейнер", rebuild)
-    task.wait(0.04)
-    buttonRow("Выгрузить", "удалить GUI и все связи", function()
+    buttonRow("Выгрузить", "удалить GUI, кольцо, связи", function()
         capturing = false
-        if loopConn then loopConn:Disconnect() end
-        if childConn then childConn:Disconnect() end
-        if cosmeticConn then cosmeticConn:Disconnect() end
-        removeEcho()
+        dropRing()
         dropBypass()
         if oldNamecall then pcall(function() hookmetamethod(game, "__namecall", oldNamecall) end) end
         for _, c in ipairs(getgenv().VeniceBBConns) do pcall(function() c:Disconnect() end) end
@@ -764,22 +620,18 @@ local function build()
     end)
 end
 
--- ============================== сборка GUI ==============================
+-- ============================== GUI ==============================
 
 local open = false
 
 updateStatus = function()
     if not status then return end
-    if CONFIG.method == "packet" then
-        if cap.remote then
-            status.Text = string.format("packet · %.0fст · %d%%", CONFIG.parryDist, CONFIG.accuracy)
-            status.TextColor3 = OKC
-        else
-            status.Text = "packet · тапни Block для захвата"
-            status.TextColor3 = WARNC
-        end
+    if CONFIG.method == "packet" and not cap.remote then
+        status.Text = "packet · тапни Block для захвата"
+        status.TextColor3 = WARNC
     else
-        status.Text = string.format("%s · %.0fст · %d%%", CONFIG.method, CONFIG.parryDist, CONFIG.accuracy)
+        status.Text = string.format("%s · порог %.2f · %s",
+            CONFIG.method, CONFIG.distanceToParry, CONFIG.autoParry and "вкл" or "выкл")
         status.TextColor3 = CONFIG.autoParry and OKC or SUB
     end
 end
@@ -868,7 +720,7 @@ local function createGui()
     status.TextSize = 10
     status.TextColor3 = WARNC
     status.TextXAlignment = Enum.TextXAlignment.Left
-    status.Text = "контейнер: " .. mountLabel
+    status.Text = "инициализация"
     status.Parent = header
 
     local closeBtn = Instance.new("TextButton")
@@ -908,7 +760,7 @@ local function createGui()
     footer.Font = Enum.Font.Gotham
     footer.TextSize = 10
     footer.TextColor3 = Color3.fromRGB(86, 86, 98)
-    footer.Text = "Z  —  свернуть меню"
+    footer.Text = "Z — меню · L — парринг"
     footer.Parent = main
 
     local dragging, dragStart, startPos
@@ -934,7 +786,7 @@ local function createGui()
     return true
 end
 
-ensure = function()
+local function ensure()
     if built then return true end
     if not createGui() then return false end
     built = true
@@ -945,7 +797,9 @@ end
 
 track(UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
-    if input.KeyCode == Enum.KeyCode.Z and not UserInputService:GetFocusedTextBox() then
+    if UserInputService:GetFocusedTextBox() then return end
+
+    if input.KeyCode == Enum.KeyCode.Z then
         if not built then
             if ensure() then
                 task.wait(0.1)
@@ -954,9 +808,11 @@ track(UserInputService.InputBegan:Connect(function(input, gp)
         else
             setGuiOpen()
         end
+    elseif input.KeyCode == Enum.KeyCode.L then
+        CONFIG.autoParry = not CONFIG.autoParry
+        ringState()
+        updateStatus()
     end
 end))
 
-print(string.format("[Venice] v16 · %s · радиус %d · bypass %s",
-    CONFIG.method, CONFIG.parryDist, tostring(CONFIG.bypass)))
-print("[Venice] тапни Block один раз — пойдёт захват пакета")
+print("[Venice] v17 · тапни Block один раз для захвата пакета")
